@@ -764,13 +764,17 @@ export class SimView {
       c.restore();
     }
     c.restore();
-    // hole walls
-    c.save(); c.setLineDash([]);
-    for (const h of holes) {
-      const p = this.screenPath(h);
-      c.strokeStyle = h === this.selected && !this.clean ? C.sel : C.edge; c.lineWidth = h === this.selected && !this.clean ? 2.5 : 1.6; c.stroke(p);
+    // hole walls: only where there is material (a hole over the edge makes a notch, no line outside the part)
+    if (holes.length) {
+      c.save(); c.setLineDash([]);
+      const mat = new Path2D(); for (const m of solids) mat.addPath(this.screenPath(m));
+      c.clip(mat);
+      for (const h of holes) {
+        const p = this.screenPath(h), sel = h === this.selected && !this.clean;
+        c.strokeStyle = sel ? C.sel : C.edge; c.lineWidth = sel ? 5 : 3.2; c.stroke(p);   // double width: half is clipped away
+      }
+      c.restore();
     }
-    c.restore();
   }
 
   // custom names written on the parts
