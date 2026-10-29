@@ -202,7 +202,7 @@ export class SimView {
     for (const b of s.bodies) {
       const g = groups.get(b.id);
       if (!g) this.drawBody(c, b);
-      else if (b === g[g.length - 1]) this.drawGroup(c, g);
+      else if (b === (g.anchor ??= ([...g].reverse().find(m => !m.cut) ?? g[g.length - 1]))) this.drawGroup(c, g);   // holes don't lift the piece to the front
     }
     for (const j of s.joints) if (j.spring === 1 && j.kind === JointKind.SLIDE && j.sol === 0) this.drawSpring(c, j);
     for (const j of s.joints) if (j.spring === 1 && j.kind === JointKind.PIN) this.drawTorsion(c, j);
