@@ -1,5 +1,5 @@
 // fox9nerMator offline cache. Bump VERSION when files change so phones pick up the update.
-const VERSION = 'f9m-v1.1.0';
+const VERSION = 'f9m-v1.2.0';
 const FILES = [
   './', 'index.html', 'manifest.webmanifest', 'css/style.css',
   'js/app.js', 'js/view.js', 'js/model.js', 'js/solver.js', 'js/collision.js', 'js/measure.js',
