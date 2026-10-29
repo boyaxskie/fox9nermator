@@ -7,7 +7,7 @@ import { Units, Calc } from './calc.js';
 import { Help } from './help.js';
 import { SimView, Tool, TOOLS } from './view.js';
 
-export const VERSION = '1.1';
+export const VERSION = '1.2';
 const PI = Math.PI;
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, attrs = {}, ...kids) => {
@@ -42,8 +42,9 @@ const projects = {
   remove(n) { const p = this.all(); delete p[n]; this.saveAll(p); },
 };
 
-const fmt = (v, d = 1) => Number(v).toFixed(d);
-const fmtLen = (mm) => Units.toUser(mm).toFixed(Units.inch ? 3 : 1);
+const nz = (t) => (/^-0\.?0*$/.test(t) ? t.slice(1) : t);
+const fmt = (v, d = 1) => nz(Number(v).toFixed(d));
+const fmtLen = (mm) => nz(Units.toUser(mm).toFixed(Units.inch ? 3 : 1));
 const fmtTrim = (v) => { let t = Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''); return t === '-0' ? '0' : t; };
 const num = (v) => (v === Math.floor(v) ? String(v) : String(v));
 const cleanName = (n) => n.trim().replace(/[^A-Za-z0-9 _.()-]/g, '_').slice(0, 60);
@@ -170,6 +171,11 @@ class App {
       setTimeout(() => { this.status.textContent = `The app froze last time, so it opened empty. Your design is saved as "${recovered}" in Projects → Open.`; }, 50);
     }
     this.history.push(this.s.toJson()); this.histIdx = 0;
+    // keep undo history across closing / reopening the app
+    try {
+      const h = JSON.parse(store.get('hist', 'null'));
+      if (h && Array.isArray(h.list) && h.list[h.idx] === this.history[0]) { this.history = h.list; this.histIdx = h.idx; }
+    } catch { }
 
     this.syncPlay(); this.syncTitle(); this.syncSteps(); this.syncCollide(); this.syncUnits(); this.syncClean(); this.syncGravity();
     this.setTool(Tool.MOVE);
@@ -214,6 +220,8 @@ class App {
       B('Front', () => this.withSel(b => { this.s.toFront(b); this.view.commitEdit(); this.say(`${b.name} is in front.`); })),
       B('Back', () => this.withSel(b => { this.s.toBack(b); this.view.commitEdit(); this.say(`${b.name} is at the back.`); })),
       B('Size', () => this.withSel(b => this.showSize(b))),
+      B('🎨 Color', () => this.withSel(b => this.askColor(b))),
+      B('✏️ Name', () => this.withSel(b => this.askName(b))),
       this.lockBtn);
 
     this.edX = this.numEdit(v => this.withSel(b => this.view.setPose(b, Units.fromUser(v), null, null)));
@@ -305,6 +313,7 @@ class App {
   // runs once on press, then repeats while held
   repeatBtn(text, action) {
     const b = el('button', { class: 'b rep', text });
+    (this.repBtns ??= []).push(b);
     let t1 = 0, t2 = 0;
     const stop = () => { clearTimeout(t1); clearInterval(t2); t1 = t2 = 0; b.classList.remove('down'); this.view.stepping = false; };
     b.addEventListener('pointerdown', e => {
@@ -354,6 +363,9 @@ class App {
     this.selBox.hidden = false;
     this.selName.textContent = b.name + (b.fixed ? '  (locked)' : '');
     this.lockBtn.textContent = b.fixed ? 'Unlock' : 'Lock';
+    const locked = this.view.isLocked(b);
+    for (const e of [this.edX, this.edY, this.edA, ...(this.repBtns ?? [])]) e.disabled = locked;
+    this.selBox.classList.toggle('locked', locked);
     this.strongBtn.textContent = b.strong ? 'Strong: ON' : 'Strong: OFF';
     this.strongBtn.classList.toggle('on', !!b.strong);
     const sj = this.s.solenoidOf(b);
@@ -472,6 +484,22 @@ class App {
     } else this.askStep('Spin speed (degrees per second)', v.degPerSec, [10, 30, 45, 90, 180], x => { v.degPerSec = x; store.set('degPerSec', x); });
   }
 
+  askColor(b) {
+    const COLS = [['#E53935', 'Red'], ['#FB8C00', 'Orange'], ['#FDD835', 'Yellow'], ['#7CB342', 'Lime'], ['#2E9D57', 'Green'], ['#00ACC1', 'Teal'],
+      ['#1E88E5', 'Blue'], ['#5C6BC0', 'Indigo'], ['#8E24AA', 'Purple'], ['#D81B60', 'Pink'], ['#8D6E63', 'Brown'], ['#ECEFF1', 'White'], ['#90A4AE', 'Grey'], ['#455A64', 'Slate']];
+    const g = this.s.weldGroupOf(b);
+    const apply = (c) => { g.forEach(m => { m.color = c; }); this.view.commitEdit(); this.say(c ? `${b.name}${g.length > 1 ? ' (+ welded parts)' : ''} colored.` : `${b.name} back to its normal color.`); };
+    const grid = el('div', { class: 'swatches' }, ...COLS.map(([c, n]) => el('button', { class: 'sw' + (b.color === c ? ' on' : ''), style: `background:${c}`, title: n, 'aria-label': n, onclick: () => { d.close(); apply(c); } })));
+    const d = Dialog.open({ title: `Color for ${b.name}`, body: grid, buttons: [{ text: 'Default color', on: () => apply(null) }, { text: 'Cancel' }] });
+  }
+  askName(b) {
+    const inp = input(b.label, b.autoName);
+    inp.maxLength = 40;
+    const go = () => { const old = b.name; b.label = inp.value.trim().slice(0, 40); this.view.commitEdit(); this.syncSel(); this.say(b.label ? `${old} is now called "${b.label}".` : `${b.name}: automatic name again.`); };
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { d.close(); go(); } });
+    const d = Dialog.open({ title: `Name for ${b.autoName}`, body: el('div', {}, inp, el('div', { class: 'dlg-note', text: 'e.g. Bolt, Latch, Base plate. Empty = automatic name. The name shows on the part and in the CNC export.' })),
+      buttons: [{ text: 'Cancel' }, { text: 'Save', primary: true, on: go }] });
+  }
   showSize(b) {
     const len = (label, mm, set) => [`${label} (${Units.label})`, Units.toUser(mm), v => set(Units.fromUser(v))];
     const T = BodyType;
@@ -610,7 +638,7 @@ class App {
   loadProject(json, name) {
     if (!json || !this.s.loadJson(json)) { this.say("That file isn't a fox9nerMator project."); return; }
     this.view.afterReload(-1); this.view.fit();
-    this.history = [this.s.toJson()]; this.histIdx = 0;
+    this.history = [this.s.toJson()]; this.histIdx = 0; this.saveHist();
     this.save();
     this.projectName = name;
     if (name) store.set('projectName', name); else store.del('projectName');
@@ -642,12 +670,24 @@ class App {
     this.history.push(js);
     if (this.history.length > 60) this.history.shift();
     this.histIdx = this.history.length - 1;
+    this.saveHist();
+  }
+  saveHist() {
+    clearTimeout(this.histSaveT);
+    this.histSaveT = setTimeout(() => {
+      // newest 30 steps, and not more than ~1.5 MB
+      let from = Math.max(0, this.history.length - 30), size = 0;
+      for (let i = this.history.length - 1; i >= from; i--) { size += this.history[i].length; if (size > 1.5e6) { from = i + 1; break; } }
+      const list = this.history.slice(from), idx = this.histIdx - from;
+      if (idx < 0) return;
+      store.set('hist', JSON.stringify({ list, idx }));
+    }, 500);
   }
   restoreHist(idx) {
     const sel = this.view.selected?.id ?? -1;
     if (!this.s.loadJson(this.history[idx])) return;
     this.histIdx = idx;
-    this.view.afterReload(sel); this.save(); this.syncSel(); this.view.ensureSprings();
+    this.view.afterReload(sel); this.save(); this.syncSel(); this.view.ensureSprings(); this.saveHist();
   }
   undo() { this.pushHistory(); if (this.histIdx <= 0) { this.say('Nothing to undo.'); return; } this.restoreHist(this.histIdx - 1); this.say('Undone.'); }
   redo() { if (this.histIdx >= this.history.length - 1) { this.say('Nothing to redo.'); return; } this.restoreHist(this.histIdx + 1); this.say('Redone.'); }

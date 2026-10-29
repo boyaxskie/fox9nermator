@@ -112,9 +112,13 @@ export class Body {
     this.stroke = 10.0;       // SOLENOID: how far the plunger travels (mm)
     this.pushType = false;    // SOLENOID: false = pull (plunger pulls in when ON), true = push (pushes out)
     this.plain = false;       // DISC: true = plain solid disc (no spokes)
+    this.cut = 0;             // 0 = normal part, 1 = through hole, 2 = pocket (cuts the part it is welded to)
+    this.color = null;        // custom fill colour (#rrggbb) or null = default for the type
+    this.label = '';          // custom name, '' = automatic ("Rect 3")
   }
 
-  get name() { return `${this.type === BodyType.DISC && this.plain ? 'Circle' : this.type.label} ${this.id}`; }
+  get autoName() { return `${this.type === BodyType.DISC && this.plain ? 'Circle' : this.type.label} ${this.id}`; }
+  get name() { return this.label || this.autoName; }
 
   pitchR() { return this.module * this.teeth / 2.0; }
   // radius the belt/chain wraps on: gear = pitch circle, pulley = its diameter / 2
@@ -532,6 +536,15 @@ export class Scene {
     return j;
   }
 
+  // CUT: `cutter` becomes a hole (1) or pocket (2) in `target`; it is welded so it moves with it
+  cutInto(cutter, target, mode) {
+    cutter.cut = mode;
+    cutter.fixed = false;
+    return this.weld(new P2(cutter.x, cutter.y), cutter, target);
+  }
+  // the solid (not cutter) parts of a weld group
+  solidsOf(b) { return this.weldGroupOf(b).filter((m) => !m.cut); }
+
   // SLOT: a point on `car` (ax, ay local) rides along a line on `guide`
   // (guide local y = by), free to rotate. Like a pin running in a slot or on a surface.
   slot(p, car, guide) {
@@ -874,6 +887,9 @@ export class Scene {
       stroke: num(b.stroke), push: b.pushType,
       wall: num(b.wall),
       ...(b.plain ? { plain: true } : {}),
+      ...(b.cut ? { cut: b.cut } : {}),
+      ...(b.color ? { color: b.color } : {}),
+      ...(b.label ? { label: b.label } : {}),
     }));
     o.joints = this.joints.map((j) => ({
       kind: j.kind.name, a: j.a, b: j.b,
@@ -909,6 +925,9 @@ export class Scene {
         b.pushType = optBoolean(bo, 'push', false);
         b.wall = optDouble(bo, 'wall', 2.0);
         b.plain = optBoolean(bo, 'plain', false);
+        b.cut = [0, 1, 2].includes(bo.cut) ? bo.cut : 0;
+        b.color = typeof bo.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(bo.color) ? bo.color : null;
+        b.label = typeof bo.label === 'string' ? bo.label.slice(0, 40) : '';
         nb.push(b);
       }
       const nj = [];

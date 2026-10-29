@@ -15,10 +15,10 @@ const fmt = (v, d) => Number(v).toFixed(d);
 export const Tool = Object.freeze({
   MOVE: { name: 'MOVE', label: 'Move' }, PIN: { name: 'PIN', label: 'Pin' }, SLIDE: { name: 'SLIDE', label: 'Slide' },
   SLOT: { name: 'SLOT', label: 'Slot' }, MESH: { name: 'MESH', label: 'Mesh' }, BELT: { name: 'BELT', label: 'Belt' },
-  WELD: { name: 'WELD', label: 'Weld' }, LOCK: { name: 'LOCK', label: 'Lock' }, TRACE: { name: 'TRACE', label: 'Trace' },
+  WELD: { name: 'WELD', label: 'Weld' }, CUT: { name: 'CUT', label: 'Cut' }, LOCK: { name: 'LOCK', label: 'Lock' }, TRACE: { name: 'TRACE', label: 'Trace' },
   MEASURE: { name: 'MEASURE', label: 'Measure' }, DELETE: { name: 'DELETE', label: 'Delete' },
 });
-export const TOOLS = [Tool.MOVE, Tool.PIN, Tool.SLIDE, Tool.SLOT, Tool.MESH, Tool.BELT, Tool.WELD, Tool.LOCK, Tool.TRACE, Tool.MEASURE, Tool.DELETE];
+export const TOOLS = [Tool.MOVE, Tool.PIN, Tool.SLIDE, Tool.SLOT, Tool.MESH, Tool.BELT, Tool.WELD, Tool.CUT, Tool.LOCK, Tool.TRACE, Tool.MEASURE, Tool.DELETE];
 
 const Drag = { NONE: 0, BODY: 1, FIXED: 2, ROTATE: 3, PAN: 4, ZOOM: 5 };
 
@@ -167,6 +167,7 @@ export class SimView {
       case Tool.LOCK: return 'Tap a part to lock / unlock it in place.';
       case Tool.TRACE: return 'Tap a point on a part to draw its path. Tap empty space to remove.';
       case Tool.WELD: return p == null ? 'Place the parts how you want them joined, then tap the first part.' : `Now tap the part to weld ${p.name} to.`;
+      case Tool.CUT: return p == null ? 'Put the hole shape (Circle, Rect…) on the part, then tap the HOLE shape.' : `Now tap the part to cut ${p.name} out of.`;
       case Tool.MEASURE:
         switch (this._measureKind) {
           case MK.DIST: return this.mPending.length === 0 ? 'Distance: tap the 1st point (snaps to holes and corners).' : 'Tap the 2nd point.';
@@ -207,6 +208,7 @@ export class SimView {
     for (const j of s.joints) if (j.spring === 1 && j.kind === JointKind.PIN) this.drawTorsion(c, j);
     for (const j of s.joints) if (j.kind === JointKind.BELT) this.drawBelt(c, j);
     for (const j of s.joints) if (j.kind !== JointKind.BELT) this.drawJoint(c, j);
+    this.drawLabels(c);
     if (this._cleanAlways) {
       MeasureCalc.update(s);
       if (this.lastMeasureText !== '') { this.lastMeasureText = ''; this.post(() => this.onMeasures?.('')); }
@@ -270,6 +272,8 @@ export class SimView {
   drawBody(c, b, merged = false, tint = null) {
     const s = this.s;
     const guides = !this.clean;
+    if (b.cut && !merged) { this.drawLooseCutter(c, b); return; }
+    tint = tint ?? b.color;
     const isSel = b === this.selected && guides && !merged;
     const isPend = b === this.pending;
     this.enterLocal(c, b);
@@ -703,15 +707,41 @@ export class SimView {
     }
     return C.rect;
   }
+  // screen-space path of a part's outline
+  screenPath(m) {
+    const p = new Path2D();
+    const mx = new DOMMatrix().translate(this.sx(m.x), this.sy(m.y)).rotate(-m.a * 180 / PI).scale(this.scale, -this.scale);
+    p.addPath(this.outlineOf(m), mx);
+    return p;
+  }
+  // a cutter that is not welded to anything yet: dashed outline only
+  drawLooseCutter(c, b) {
+    const p = this.screenPath(b);
+    c.save();
+    c.fillStyle = 'rgba(255,255,255,0.05)'; c.fill(p);
+    c.strokeStyle = b === this.selected ? C.sel : b === this.pending ? C.pending : '#9AA3AD';
+    c.lineWidth = b === this.selected || b === this.pending ? 2.5 : 1.5; c.setLineDash([6, 4]); c.stroke(p);
+    c.restore();
+  }
   // One outline around the whole piece: stroke every member's outline first, then fill them all on top,
-  // so only the outer edge stays visible (no lines where they join).
+  // so only the outer edge stays visible (no lines where they join). Through holes are clipped out,
+  // pockets are drawn darker.
   drawGroup(c, g) {
-    let main = g[0]; for (const m of g) if (m.boundR() > main.boundR()) main = m;
-    const tint = this.baseColor(main);
+    const solids = g.filter((m) => !m.cut), holes = g.filter((m) => m.cut === 1), pockets = g.filter((m) => m.cut === 2);
+    if (!solids.length) { g.forEach((m) => this.drawLooseCutter(c, m)); return; }
+    let main = solids[0]; for (const m of solids) if (m.boundR() > main.boundR()) main = m;
+    const tint = main.color ?? this.baseColor(main);
     const selected = !this.clean && g.some(m => m === this.selected);
+    c.save();
+    if (holes.length) {
+      const clip = new Path2D();
+      clip.rect(-10, -10, this.width + 20, this.height + 20);
+      for (const h of holes) clip.addPath(this.screenPath(h));
+      c.clip(clip, 'evenodd');
+    }
     c.setLineDash([]);
     for (const pass of selected ? ['sel', 'edge'] : ['edge']) {
-      for (const m of g) {
+      for (const m of solids) {
         this.enterLocal(c, m);
         c.strokeStyle = pass === 'sel' ? C.sel : C.edge;
         c.lineWidth = this.px(pass === 'sel' ? 5 : 2.4);
@@ -720,7 +750,41 @@ export class SimView {
         c.restore();
       }
     }
-    for (const m of g) this.drawBody(c, m, true, tint);
+    for (const m of solids) this.drawBody(c, m, true, tint);
+    if (pockets.length) {
+      // pocket = darker floor, only where there is material
+      c.save();
+      const mat = new Path2D(); for (const m of solids) mat.addPath(this.screenPath(m));
+      c.clip(mat);
+      for (const pk of pockets) {
+        const p = this.screenPath(pk);
+        c.fillStyle = 'rgba(0,0,0,0.38)'; c.fill(p);
+        c.strokeStyle = 'rgba(0,0,0,0.75)'; c.lineWidth = 1.2; c.setLineDash([5, 3]); c.stroke(p);
+      }
+      c.restore();
+    }
+    c.restore();
+    // hole walls
+    c.save(); c.setLineDash([]);
+    for (const h of holes) {
+      const p = this.screenPath(h);
+      c.strokeStyle = h === this.selected && !this.clean ? C.sel : C.edge; c.lineWidth = h === this.selected && !this.clean ? 2.5 : 1.6; c.stroke(p);
+    }
+    c.restore();
+  }
+
+  // custom names written on the parts
+  drawLabels(c) {
+    if (this.clean) return;
+    c.save();
+    c.font = '600 11px system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    for (const b of this.s.bodies) {
+      if (!b.label) continue;
+      const x = this.sx(b.x), y = this.sy(b.y), w = c.measureText(b.label).width;
+      c.fillStyle = 'rgba(20,23,28,0.72)'; c.beginPath(); roundRect(c, x - w / 2 - 4, y - 8, w + 8, 16, 4); c.fill();
+      c.fillStyle = '#FFFFFF'; c.fillText(b.label, x, y + 0.5);
+    }
+    c.restore();
   }
 
   // ---------- belt / chain ----------
@@ -793,7 +857,14 @@ export class SimView {
 
   // ---------- hit testing ----------
   tol() { return 8 / this.scale; }
-  hitAll(w) { return [...this.s.bodies].reverse().filter(b => b.contains(w.x, w.y, this.tol())); }
+  hitAll(w, solidOnly = false) {
+    const all = [...this.s.bodies].reverse().filter(b => b.contains(w.x, w.y, this.tol()));
+    if (!solidOnly) return all;
+    // skip cutters, and parts whose through hole is right under the finger
+    return all.filter(b => !b.cut && !this.s.weldGroupOf(b).some(h => h.cut === 1 && h.contains(w.x, w.y, 0)));
+  }
+  isLocked(b) { return b.fixed || this.s.weldGroupOf(b).some(m => m.fixed); }
+  lockedMsg(b) { const f = b.fixed ? b : this.s.weldGroupOf(b).find(m => m.fixed); return f === b ? `${b.name} is locked. Tap Unlock to move it.` : `${b.name} is welded to ${f.name}, which is locked. Unlock ${f.name} to move it.`; }
   snap(w, cands) {
     let best = w, bestD = 16 / this.scale;
     for (const b of cands) for (const sp of b.snapPoints()) {
@@ -873,7 +944,7 @@ export class SimView {
           this.stopMotor();
           if (b !== this.selected) this.select(b);
           this.ignore = Collision.overlappingPairs(this.s);
-          if (b.fixed) this.drag = Drag.FIXED;
+          if (this.isLocked(b)) this.drag = Drag.PAN;    // locked = really locked: a drag only moves the view
           else { this.drag = Drag.BODY; const l = b.toLocal(w.x, w.y); this.grabLx = l.x; this.grabLy = l.y; }
         }
       }
@@ -960,11 +1031,14 @@ export class SimView {
   }
 
   onTapInner(px, py, was) {
-    const s = this.s, w = this.world(px, py), hits = this.hitAll(w);
+    const s = this.s, w = this.world(px, py);
+    const solidTools = [Tool.PIN, Tool.SLIDE, Tool.SLOT, Tool.MESH, Tool.BELT, Tool.TRACE, Tool.WELD, Tool.MEASURE];
+    const hits = this.hitAll(w, solidTools.includes(this._tool));
     switch (this._tool) {
       case Tool.MOVE: {
         const ml = this.distLineNear(px, py, hits.length === 0 ? 22 : 10);
         if (ml) this.onEditDistance?.(ml);
+        else if (was === Drag.PAN && hits[0] && this.isLocked(hits[0])) this.status(this.lockedMsg(hits[0]));
         else if (was === Drag.PAN && hits.length === 0) {
           const bj = this.beltNear(px, py);
           if (bj) this.status(this.beltInfo(bj)); else this.select(null);
@@ -1064,6 +1138,37 @@ export class SimView {
           if (err) { this.status(err); this.invalidate(); return; }
           this.status(`${first.name} meshed with ${other.name}.`);
           this.done();
+        }
+        break;
+      }
+      case Tool.CUT: {
+        const first = this.pending;
+        if (!first) {
+          const b = hits[0]; if (!b) { this.status('Tap the shape that will become the hole.'); return; }
+          if (b.cut && s.weldGroupOf(b).some(m => !m.cut)) {
+            // tapping an existing hole: change it or turn it back into a part
+            const host = s.weldGroupOf(b).find(m => !m.cut);
+            this.onChoose?.(`${b.name}: ${b.cut === 1 ? 'through hole' : 'pocket'} in ${host.name}`, ['Make it a through hole', 'Make it a pocket', 'Turn it back into a normal part'], i => {
+              if (i < 2) { b.cut = i + 1; this.status(`${b.name} is now a ${i ? 'pocket' : 'through hole'}.`); }
+              else { b.cut = 0; s.joints.splice(0, s.joints.length, ...s.joints.filter(j => !(j.kind === JointKind.WELD && (j.a === b.id || j.b === b.id)))); this.status(`${b.name} is a normal part again (unwelded).`); }
+              this.done(); this.finishTool();
+            });
+            return;
+          }
+          this.pending = b; this.status(this.prompt()); this.invalidate();
+        } else {
+          const target = hits.find(x => x !== first && !x.cut);
+          if (!target) { this.status(`Tap the part to cut ${first.name} out of.`); return; }
+          const overlaps = Collision.overlap(Collision.shapesOf(first.cut ? Object.assign(Object.create(Object.getPrototypeOf(first)), first, { cut: 0 }) : first), Collision.shapesOf(target));
+          const make = (mode) => {
+            s.cutInto(first, target, mode);
+            this.pending = null;
+            this.status(`${first.name} is now a ${mode === 1 ? 'through hole' : 'pocket'} in ${target.name}. It moves with it. Tap the hole with Cut again to change it.` + (overlaps ? '' : ' (It doesn\'t touch the part yet: move the hole onto it.)'));
+            this.done(); this.finishTool();
+          };
+          this.pending = null; this.invalidate();
+          if (!this.onChoose) make(1);
+          else this.onChoose('Cut type', ['Through hole (cut all the way)', 'Pocket (cut part depth, CNC sets the depth)'], i => make(i + 1));
         }
         break;
       }
@@ -1205,6 +1310,7 @@ export class SimView {
   }
 
   area(b) {
+    if (b.cut) return 0;
     switch (b.type) {
       case BodyType.GEAR: return PI * b.pitchR() * b.pitchR();
       case BodyType.PULLEY: case BodyType.DISC: return PI * b.w * b.w / 4;
@@ -1381,24 +1487,18 @@ export class SimView {
   }
 
   setPose(b, x, y, angDeg) {
-    if (b.fixed) {
-      if (x != null) b.x = x; if (y != null) b.y = y;
-      if (angDeg != null) b.a = b.a + wrapPi(angDeg * PI / 180 - b.a);
-    } else {
-      this.ignore = Collision.overlappingPairs(this.s);
-      if (x != null || y != null) this.movePoint(b, 0, 0, x ?? b.x, y ?? b.y, 60);
-      if (angDeg != null) this.moveAngle(b, b.a + wrapPi(angDeg * PI / 180 - b.a), 60);
-    }
+    if (this.isLocked(b)) { this.status(this.lockedMsg(b)); this.onSelect?.(b); return; }
+    this.ignore = Collision.overlappingPairs(this.s);
+    if (x != null || y != null) this.movePoint(b, 0, 0, x ?? b.x, y ?? b.y, 60);
+    if (angDeg != null) this.moveAngle(b, b.a + wrapPi(angDeg * PI / 180 - b.a), 60);
     this.done();
   }
 
   nudge(b, dx, dy, dDeg) {
-    if (b.fixed) { b.x += dx; b.y += dy; b.a += dDeg * PI / 180; }
-    else {
-      this.ignore = Collision.overlappingPairs(this.s);
-      if (dx !== 0 || dy !== 0) this.movePoint(b, 0, 0, b.x + dx, b.y + dy, 60);
-      if (dDeg !== 0) this.moveAngle(b, b.a + dDeg * PI / 180, 60);
-    }
+    if (this.isLocked(b)) { this.status(this.lockedMsg(b)); return; }
+    this.ignore = Collision.overlappingPairs(this.s);
+    if (dx !== 0 || dy !== 0) this.movePoint(b, 0, 0, b.x + dx, b.y + dy, 60);
+    if (dDeg !== 0) this.moveAngle(b, b.a + dDeg * PI / 180, 60);
     this.done();
   }
 

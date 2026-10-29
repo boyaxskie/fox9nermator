@@ -9,6 +9,7 @@ import { P2, BodyType, JointKind } from './model.js';
 import polygonClipping from './vendor/polygon-clipping.esm.js';
 
 const PI = Math.PI;
+const POCKET = 'POCKET';
 
 export class Cut {
   constructor(layer) { this.layer = layer; }
@@ -97,6 +98,14 @@ function shift(c, dx, dy) {
   return new Circ(new P2(c.c.x + dx, c.c.y + dy), c.r, c.layer);
 }
 
+// polygon-clipping ring helpers
+const ring = (pl) => [pl.map((p) => [p.x, p.y])];
+function unring(r) {
+  const pts = r.map(([x, y]) => new P2(x, y));
+  if (pts.length > 1) { const a = pts[0], b = pts[pts.length - 1]; if (a.x === b.x && a.y === b.y) pts.pop(); }
+  return pts;
+}
+
 // ---------- file formats ----------
 
 function f(v) { return formatFixed(v, 4); }
@@ -129,6 +138,7 @@ export const Exporter = {
 
   OUTLINE,
   HOLES,
+  POCKET,
 
   circlePts(r, n = 96) {
     const out = [];
@@ -161,10 +171,13 @@ export const Exporter = {
 
     for (const b of parts) {
       if (done.has(b.id)) continue;
-      const group = s.weldGroupOf(b);
-      group.forEach((it) => done.add(it.id));
-      if (group.length === 1 && (b.type === BodyType.RAIL || b.type === BodyType.TUBE || b.type === BodyType.SOLENOID)) { skippedStock++; continue; }
-      let main = b;
+      const whole = s.weldGroupOf(b);
+      whole.forEach((it) => done.add(it.id));
+      const group = whole.filter((it) => !it.cut);
+      const holesB = whole.filter((it) => it.cut === 1), pocketsB = whole.filter((it) => it.cut === 2);
+      if (group.length === 0) continue;
+      if (group.length === 1 && !holesB.length && (group[0].type === BodyType.RAIL || b.type === BodyType.TUBE || b.type === BodyType.SOLENOID)) { skippedStock++; continue; }
+      let main = group[0];
       if (group.length > 0) {
         main = group[0];
         for (const it of group) if (it.boundR() > main.boundR()) main = it;
@@ -173,10 +186,21 @@ export const Exporter = {
 
       const cuts = [];
       // outline
-      if (group.length === 1 && (b.type === BodyType.PULLEY || b.type === BodyType.DISC)) {
-        cuts.push(new Circ(new P2(0.0, 0.0), b.w / 2, OUTLINE));
+      const polysOf = (list) => list.map((m) => Exporter.outlinePts(m).map((it) => toMain(m, it)));
+      if (holesB.length || pocketsB.length) {
+        // cut holes out of the welded outline; inner rings = through cuts, pockets on their own layer
+        const solid = polygonClipping.union(...polysOf(group).map(ring));
+        const rest = holesB.length ? polygonClipping.difference(solid, ...polysOf(holesB).map(ring)) : solid;
+        for (const poly of rest) for (const r of poly) { const pts = unring(r); if (pts.length >= 3) cuts.push(new Poly(pts, OUTLINE)); }
+        if (pocketsB.length) {
+          const pk = polygonClipping.intersection(rest, polygonClipping.union(...polysOf(pocketsB).map(ring)));
+          for (const poly of pk) { const pts = unring(poly[0]); if (pts.length >= 3) cuts.push(new Poly(pts, POCKET)); }
+          notes.push(`${main.name}: ${pocketsB.length} pocket(s) on layer POCKET (green in SVG). Set the pocket depth in your CAM software.`);
+        }
+      } else if (group.length === 1 && (main.type === BodyType.PULLEY || main.type === BodyType.DISC)) {
+        cuts.push(new Circ(new P2(0.0, 0.0), main.w / 2, OUTLINE));
       } else if (group.length === 1) {
-        cuts.push(new Poly(Exporter.outlinePts(b), OUTLINE));
+        cuts.push(new Poly(Exporter.outlinePts(main), OUTLINE));
       } else {
         const polys = group.map((m) => Exporter.outlinePts(m).map((it) => toMain(m, it)));
         const u = Exporter.union != null ? Exporter.union(polys) : null;
@@ -246,8 +270,8 @@ export const Exporter = {
     g(9, '$MEASUREMENT'); g(70, '1');
     g(0, 'ENDSEC');
     g(0, 'SECTION'); g(2, 'TABLES');
-    g(0, 'TABLE'); g(2, 'LAYER'); g(70, '2');
-    for (const [name, color] of [[OUTLINE, '7'], [HOLES, '1']]) {
+    g(0, 'TABLE'); g(2, 'LAYER'); g(70, '3');
+    for (const [name, color] of [[OUTLINE, '7'], [HOLES, '1'], [POCKET, '3']]) {
       g(0, 'LAYER'); g(2, name); g(70, '0'); g(62, color); g(6, 'CONTINUOUS');
     }
     g(0, 'ENDTAB'); g(0, 'ENDSEC');
@@ -275,11 +299,11 @@ export const Exporter = {
     let sb = '';
     sb += '<?xml version="1.0" encoding="UTF-8"?>\n';
     sb += `<svg xmlns="http://www.w3.org/2000/svg" width="${f(w)}mm" height="${f(h)}mm" viewBox="0 0 ${f(w)} ${f(h)}">\n`;
-    sb += '<!-- fox9nerMator export, units: mm. Black = outline, red = holes/slots -->\n';
+    sb += '<!-- fox9nerMator export, units: mm. Black = outline (inner rings = through cuts), red = holes/slots, green = pockets -->\n';
     for (const p of r.pieces) {
       sb += `<g id="${p.name.replaceAll('"', '')}">\n`;
       for (const c of p.cuts) {
-        const col = c.layer === HOLES ? '#ff0000' : '#000000';
+        const col = c.layer === HOLES ? '#ff0000' : c.layer === POCKET ? '#00a000' : '#000000';
         if (c instanceof Poly) {
           sb += `<path fill="none" stroke="${col}" stroke-width="0.1" d="M`;
           c.pts.forEach((pt, i) => { if (i > 0) sb += ' L'; sb += X(pt.x) + ',' + Y(pt.y); });

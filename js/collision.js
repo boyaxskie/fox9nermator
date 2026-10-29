@@ -220,8 +220,83 @@ function probePts(x, toward) {
   return d < 1e-9 ? [[x.cx, x.cy]] : [[x.cx + dx / d * x.r, x.cy + dy / d * x.r]];
 }
 
+// ---------- through holes (Cut tool) ----------
+// For every part: the through-hole cutters welded into its piece.
+function holeMap(s) {
+  const m = new Map();
+  if (!s.bodies.some((b) => b.cut === 1)) return m;
+  for (const b of s.bodies) {
+    if (m.has(b.id)) continue;
+    const g = s.weldGroupOf(b);
+    const holes = g.filter((x) => x.cut === 1);
+    for (const x of g) m.set(x.id, holes);
+  }
+  return m;
+}
+// signed distance from a point to the hole edge (negative = inside) and the outward normal there
+function holeSd(h, px, py) {
+  const l = h.toLocal(px, py);
+  const round = h.type === BodyType.DISC || h.type === BodyType.PULLEY || h.type === BodyType.GEAR;
+  if (round) {
+    const r = h.type === BodyType.GEAR ? h.pitchR() : h.w / 2;
+    const d = Math.hypot(px - h.x, py - h.y);
+    return d < 1e-9 ? [-r, 1, 0] : [d - r, (px - h.x) / d, (py - h.y) / d];
+  }
+  const hw = h.w / 2, hh = h.h / 2;
+  const ex = Math.abs(l.x) - hw, ey = Math.abs(l.y) - hh;
+  let nx, ny, sd;
+  if (ex > ey) { sd = ex; nx = Math.sign(l.x) || 1; ny = 0; } else { sd = ey; nx = 0; ny = Math.sign(l.y) || 1; }
+  const c = Math.cos(h.a), sn = Math.sin(h.a);
+  return [sd, nx * c - ny * sn, nx * sn + ny * c];
+}
+// how far a part's shapes stick out of a hole: [depth, nx, ny, px, py] (worst point)
+function stickOut(shapes, h) {
+  let best = [-MAX, 1, 0, 0, 0];
+  for (const x of shapes) {
+    if (x.circle) {
+      const [sd, nx, ny] = holeSd(h, x.cx, x.cy);
+      const d = sd + x.r;
+      if (d > best[0]) best = [d, nx, ny, x.cx + nx * x.r, x.cy + ny * x.r];
+    } else {
+      for (let i = 0; i < x.pts.length; i += 2) {
+        const [sd, nx, ny] = holeSd(h, x.pts[i], x.pts[i + 1]);
+        if (sd > best[0]) best = [sd, nx, ny, x.pts[i], x.pts[i + 1]];
+      }
+    }
+  }
+  return best;
+}
+// a hole in `host`'s piece that contains `inner`'s centre, or null
+function holeAround(hm, host, inner) {
+  const hs = hm.get(host.id);
+  if (!hs || !hs.length) return null;
+  return hs.find((h) => holeSd(h, inner.x, inner.y)[0] < 0) ?? null;
+}
+// collision between two parts, knowing about holes.
+// returns null (no contact) or a Contact (b moves +n, a moves −n)
+function pairContact(hm, a, sa, b, sb, wantContact) {
+  let any = false;
+  for (const x of sa) { for (const y of sb) if (hit(x, y)) { any = true; break; } if (any) break; }
+  if (!any) return null;
+  let h = holeAround(hm, b, a);
+  if (h) { const o = stickOut(sa, h); return o[0] > EPS ? new Contact(a, b, o[1], o[2], o[0], o[3], o[4]) : null; }
+  h = holeAround(hm, a, b);
+  if (h) { const o = stickOut(sb, h); return o[0] > EPS ? new Contact(a, b, -o[1], -o[2], o[0], o[3], o[4]) : null; }
+  if (!wantContact) return true;
+  let best = null;
+  for (const x of sa) for (const y of sb) {
+    const m = mtv(x, y); if (m == null) continue;
+    if (best == null || m[2] > best.depth) {
+      const p = support(x, m[0], m[1]); const q = support(y, -m[0], -m[1]);
+      best = new Contact(a, b, m[0], m[1], m[2], (p[0] + q[0]) / 2, (p[1] + q[1]) / 2);
+    }
+  }
+  return best;
+}
+
 export const Collision = {
   shapesOf(b) {
+    if (b.cut) return [];          // a hole / pocket cutter is empty space
     switch (b.type) {
       case BodyType.RECT: case BodyType.SOLENOID:
         return [box(b, -b.w / 2, -b.h / 2, b.w / 2, b.h / 2)];
@@ -264,13 +339,14 @@ export const Collision = {
     const ex = exempt(s);
     const act = active(s);
     const sh = s.bodies.map((it) => Collision.shapesOf(it));
+    const hm = holeMap(s);
     for (let i = 0; i < s.bodies.length; i++) for (let k = i + 1; k < s.bodies.length; k++) {
       const a = s.bodies[i]; const b = s.bodies[k];
       if (a.fixed && b.fixed) continue;
       if (!act.has(a.id) || !act.has(b.id)) continue;
       const kk = key(a.id, b.id);
       if (ex.has(kk)) continue;
-      if (Collision.overlap(sh[i], sh[k])) out.add(kk);
+      if (pairContact(hm, a, sh[i], b, sh[k], false)) out.add(kk);
     }
     return out;
   },
@@ -279,13 +355,14 @@ export const Collision = {
     const ex = exempt(s);
     const act = active(s);
     const sh = s.bodies.map((it) => Collision.shapesOf(it));
+    const hm = holeMap(s);
     for (let i = 0; i < s.bodies.length; i++) for (let k = i + 1; k < s.bodies.length; k++) {
       const a = s.bodies[i]; const b = s.bodies[k];
       if (a.fixed && b.fixed) continue;
       if (!act.has(a.id) || !act.has(b.id)) continue;
       const kk = key(a.id, b.id);
       if (ex.has(kk) || ignore.has(kk)) continue;
-      if (Collision.overlap(sh[i], sh[k])) return true;
+      if (pairContact(hm, a, sh[i], b, sh[k], false)) return true;
     }
     return false;
   },
@@ -300,21 +377,15 @@ export const Collision = {
     const ex = exempt(s);
     const act = active(s);
     const sh = s.bodies.map((it) => Collision.shapesOf(it));
+    const hm = holeMap(s);
     for (let i = 0; i < s.bodies.length; i++) for (let k = i + 1; k < s.bodies.length; k++) {
       const a = s.bodies[i]; const b = s.bodies[k];
       if (a.fixed && b.fixed) continue;
       if (!act.has(a.id) || !act.has(b.id)) continue;
       const kk = key(a.id, b.id);
       if (ex.has(kk) || ignore.has(kk)) continue;
-      let best = null;
-      for (const x of sh[i]) for (const y of sh[k]) {
-        const m = mtv(x, y); if (m == null) continue;
-        if (best == null || m[2] > best.depth) {
-          const sa = support(x, m[0], m[1]); const sb = support(y, -m[0], -m[1]);
-          best = new Contact(a, b, m[0], m[1], m[2], (sa[0] + sb[0]) / 2, (sa[1] + sb[1]) / 2);
-        }
-      }
-      if (best != null) out.push(best);
+      const best = pairContact(hm, a, sh[i], b, sh[k], true);
+      if (best instanceof Contact) out.push(best);
     }
     return out;
   },
