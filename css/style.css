@@ -30,7 +30,7 @@ body { position: fixed; inset: 0; }
 .scroll::-webkit-scrollbar { height: 4px; } .scroll::-webkit-scrollbar-thumb { background: #3a414c; border-radius: 2px; }
 .lbl { color: var(--dim); padding: 0 2px 0 4px; font-size: 13px; }
 
-.b { flex: 0 0 auto; background: var(--btn); color: var(--text); border: 0; border-radius: 6px; padding: 8px 12px; font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; user-select: none; -webkit-user-select: none; touch-action: manipulation; }
+.b { -webkit-touch-callout: none; flex: 0 0 auto; background: var(--btn); color: var(--text); border: 0; border-radius: 6px; padding: 8px 12px; font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; user-select: none; -webkit-user-select: none; touch-action: manipulation; }
 .b:hover { background: var(--btn-hi); }
 .b:active, .b.down { background: #3e4652; }
 .b.on { color: var(--accent); }
