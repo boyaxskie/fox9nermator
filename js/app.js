@@ -7,7 +7,7 @@ import { Units, Calc } from './calc.js';
 import { Help } from './help.js';
 import { SimView, Tool, TOOLS } from './view.js';
 
-export const VERSION = '1.0';
+export const VERSION = '1.1';
 const PI = Math.PI;
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, attrs = {}, ...kids) => {
@@ -162,8 +162,9 @@ class App {
     this.mmStep = store.num('mmStep', 1); this.inStep = store.num('inStep', 0.1); this.angStep = store.num('angStep', 1);
     Units.inch = store.bool('inch', false);
     this.projectName = store.get('projectName');
+    this.solHold = store.bool('solHold', false);
 
-    setTimeout(() => store.set('starting', false), 4000);
+    setTimeout(() => store.set('starting', false), 1500);
     if (recovered) {
       this.projectName = null;
       setTimeout(() => { this.status.textContent = `The app froze last time, so it opened empty. Your design is saved as "${recovered}" in Projects → Open.`; }, 50);
@@ -190,7 +191,11 @@ class App {
 
     // selected-part rows
     this.playBtn = B('▶ Play', () => { const v = this.view; if (v.motorBody) v.stopMotor(); else { const b = this.selected(); if (b) v.startMotor(b); } }, 'accent');
-    this.solBtn = B('⚡ Solenoid', () => this.toggleSolenoid());
+    this.solBtn = this.solenoidButton();
+    this.solModeBtn = B('', () => {
+      this.solHold = !this.solHold; store.set('solHold', this.solHold); this.syncSel();
+      this.say(this.solHold ? 'Solenoid button: HOLD. Press and hold ⚡ = ON, let go = OFF (like a push button).' : 'Solenoid button: SWITCH. Tap ⚡ once = ON, tap again = OFF.');
+    });
     this.modeBtn = B('', () => { this.view.playOnce = !this.view.playOnce; store.set('playOnce', this.view.playOnce); this.syncPlay(); });
     this.dirBtn = B('', () => { this.view.playDir = -this.view.playDir; store.set('playDir', this.view.playDir); this.syncPlay(); });
     this.fallsBtn = B('Falls: NO', () => this.toggleFalls());
@@ -202,7 +207,7 @@ class App {
     this.lockBtn = B('Lock', () => this.withSel(b => { b.fixed = !b.fixed; this.view.commitEdit(); this.syncSel(); }));
     this.selName = el('div', { id: 'selname' });
     const selBtns = el('div', { class: 'scroll' },
-      this.playBtn, this.solBtn, this.modeBtn, this.dirBtn,
+      this.playBtn, this.solBtn, this.solModeBtn, this.modeBtn, this.dirBtn,
       B('Speed', () => this.withSel(b => this.askSpeed(b))),
       B('Spring', () => this.withSel(b => this.askSpring(b))),
       this.fallsBtn, this.strongBtn,
@@ -252,7 +257,7 @@ class App {
       B('? Help', () => this.showHelp()), B('Projects', () => this.showProjects()), B('CNC Export', () => this.showCncExport()),
       B('+ Rect', () => this.addPart(BodyType.RECT)), B('+ Gear', () => this.addPart(BodyType.GEAR)),
       B('+ Rail', () => this.addPart(BodyType.RAIL)), B('+ Tube', () => this.addPart(BodyType.TUBE)),
-      B('+ Pulley', () => this.addPart(BodyType.PULLEY)), B('+ Disc', () => this.addPart(BodyType.DISC)),
+      B('+ Pulley', () => this.addPart(BodyType.PULLEY)), B('+ Disc', () => this.addPart(BodyType.DISC)), B('+ Circle', () => this.addCircle()),
       B('+ Solenoid', () => this.addSolenoid()), B('+ Rack', () => this.addPart(BodyType.RACK)),
       this.unitsBtn, this.gravityBtn, this.collideBtn,
       B('Fit', () => this.view.fit()),
@@ -354,6 +359,8 @@ class App {
     const sj = this.s.solenoidOf(b);
     this.solBtn.textContent = !sj ? '⚡ Solenoid' : sj.sol === 2 ? '⚡ ON' : '⚡ OFF';
     this.solBtn.classList.toggle('warn', sj?.sol === 2);
+    this.solModeBtn.hidden = !sj;
+    this.solModeBtn.textContent = this.solHold ? 'Button: Hold' : 'Button: Switch';
     this.fallsBtn.textContent = b.noGravity ? 'Falls: NO' : this.view.gravity === 0 ? 'Falls: YES (Gravity OFF)' : 'Falls: YES';
     const a = document.activeElement;
     if (a !== this.edX) this.edX.value = fmtLen(b.x);
@@ -368,6 +375,13 @@ class App {
     this.setTool(Tool.MOVE); this.view.select(b); this.view.commitEdit();
     this.say(`${b.name} added. Drag it into place, then use Pin / Slide / Mesh.`);
   }
+  addCircle() {
+    const c = this.view.centerWorld();
+    const b = this.s.add(BodyType.DISC, c.x, c.y);
+    b.plain = true; b.w = 60; b.h = 60;
+    this.setTool(Tool.MOVE); this.view.select(b); this.view.commitEdit();
+    this.say(`${b.name} added (plain disc, ⌀ ${fmtLen(60)} ${Units.label}). Change it with Size. Pin it in the center to make a wheel or cam.`);
+  }
   addSolenoid() {
     Dialog.open({
       title: 'Solenoid type', items: ['Pull: plunger pulls IN when ON', 'Push: plunger pushes OUT when ON'], buttons: [{ text: 'Cancel' }],
@@ -378,6 +392,29 @@ class App {
         this.say(`${coil.name} added (locked, stroke ${fmtLen(coil.stroke)} ${Units.label}). Pin or weld its plunger to your latch, then tap ⚡ to switch it.`);
       },
     });
+  }
+  // ⚡ button: SWITCH = tap toggles; HOLD = ON while pressed, OFF on release
+  solenoidButton() {
+    const b = el('button', { class: 'b', text: '⚡ Solenoid' });
+    let held = false;
+    const release = () => { if (!held) return; held = false; b.classList.remove('down'); this.setSol(false); };
+    b.addEventListener('pointerdown', e => {
+      if (!this.solHold) return;
+      e.preventDefault(); b.setPointerCapture?.(e.pointerId);
+      const sel = this.selected(); if (!sel || !this.s.solenoidOf(sel)) { this.toggleSolenoid(); return; }
+      held = true; b.classList.add('down'); this.setSol(true);
+    });
+    b.addEventListener('pointerup', release); b.addEventListener('pointercancel', release); b.addEventListener('lostpointercapture', release);
+    b.addEventListener('contextmenu', e => e.preventDefault());
+    b.addEventListener('click', () => { if (!this.solHold) this.toggleSolenoid(); });
+    return b;
+  }
+  setSol(on) {
+    const b = this.selected(); if (!b) return;
+    const j = this.s.solenoidOf(b); if (!j) return;
+    if ((j.sol === 2) === on) return;
+    this.s.setSolenoid(j, on); this.view.commitEdit(); this.syncSel();
+    this.say(on ? '⚡ ON (holding): the coil drives the plunger.' : 'Released: OFF, the spring returns the plunger.');
   }
   toggleSolenoid() {
     const b = this.selected(); if (!b) return;

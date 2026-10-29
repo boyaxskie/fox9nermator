@@ -28,7 +28,7 @@ const C = {
   pin: '#FFFFFF', pinFill: '#14171C', ground: '#9AA3AD', slide: '#4FC3F7', mesh: '#FF4FD8', weld: '#FFB300',
   trace: '#3DDC84', handle: '#3DDC84', label: '#FFFFFF', lock: '#FFD54F',
   rect: '#E08A2E', gear: '#C9A227', rail: '#A7B0BA', rack: '#2BB3A3', tube: '#8FA3B8', pulley: '#B8C2CC',
-  disc: '#7F8C99', steel: '#B4B2A9', copper: '#B87333', copperOn: '#FF9A3C', glow: '#FFD54F', groove: '#5F6873',
+  disc: '#7F8C99', plain: '#5E9ED6', steel: '#B4B2A9', copper: '#B87333', copperOn: '#FF9A3C', glow: '#FFD54F', groove: '#5F6873',
   tubeIn: '#262C34', block: '#4A525C', meas: '#FFD54F', measBg: 'rgba(20,23,28,0.8)', measPath: 'rgba(255,213,79,0.5)',
   belt: '#2C2C2A', chain: '#5F6873', link: '#B4B2A9', beltMark: '#888780', spring: '#D3D1C7',
 };
@@ -327,6 +327,13 @@ export class SimView {
       case BodyType.DISC: {
         const r = b.w / 2;
         outline = this.outlineOf(b);
+        if (b.plain) {
+          fill(tint ?? C.plain); c.beginPath(); c.arc(0, 0, r, 0, 2 * PI); c.fill();
+          if (!merged) { edge(); c.beginPath(); c.arc(0, 0, r, 0, 2 * PI); c.stroke(); }
+          if (guides) { edge(); c.lineWidth = this.px(1.5); c.beginPath(); c.moveTo(0, 0); c.lineTo(r * 0.8, 0); c.stroke(); }
+          fill(C.hole); c.beginPath(); c.arc(0, 0, max(r * 0.08, this.px(2)), 0, 2 * PI); c.fill();
+          break;
+        }
         fill(tint ?? C.disc); c.beginPath(); c.arc(0, 0, r, 0, 2 * PI); c.fill();
         fill(C.tubeIn); c.beginPath(); c.arc(0, 0, r * 0.74, 0, 2 * PI); c.fill();
         fill(tint ?? C.disc);
@@ -691,7 +698,7 @@ export class SimView {
   baseColor(b) {
     switch (b.type) {
       case BodyType.RECT: return C.rect; case BodyType.TUBE: return C.tube; case BodyType.GEAR: return C.gear;
-      case BodyType.PULLEY: return C.pulley; case BodyType.DISC: return C.disc; case BodyType.RAIL: return C.rail;
+      case BodyType.PULLEY: return C.pulley; case BodyType.DISC: return b.plain ? C.plain : C.disc; case BodyType.RAIL: return C.rail;
       case BodyType.RACK: return C.rack; case BodyType.SOLENOID: return C.block;
     }
     return C.rect;

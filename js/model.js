@@ -111,9 +111,10 @@ export class Body {
     this.strong = false;      // true = holds its position like an actuator: can't be pushed back
     this.stroke = 10.0;       // SOLENOID: how far the plunger travels (mm)
     this.pushType = false;    // SOLENOID: false = pull (plunger pulls in when ON), true = push (pushes out)
+    this.plain = false;       // DISC: true = plain solid disc (no spokes)
   }
 
-  get name() { return `${this.type.label} ${this.id}`; }
+  get name() { return `${this.type === BodyType.DISC && this.plain ? 'Circle' : this.type.label} ${this.id}`; }
 
   pitchR() { return this.module * this.teeth / 2.0; }
   // radius the belt/chain wraps on: gear = pitch circle, pulley = its diameter / 2
@@ -872,6 +873,7 @@ export class Scene {
       strong: b.strong,
       stroke: num(b.stroke), push: b.pushType,
       wall: num(b.wall),
+      ...(b.plain ? { plain: true } : {}),
     }));
     o.joints = this.joints.map((j) => ({
       kind: j.kind.name, a: j.a, b: j.b,
@@ -906,6 +908,7 @@ export class Scene {
         b.stroke = optDouble(bo, 'stroke', 10.0);
         b.pushType = optBoolean(bo, 'push', false);
         b.wall = optDouble(bo, 'wall', 2.0);
+        b.plain = optBoolean(bo, 'plain', false);
         nb.push(b);
       }
       const nj = [];
