@@ -69,3 +69,7 @@ canvas.tri { width: 100%; height: 160px; display: block; }
 img.preview { width: 100%; max-height: 220px; object-fit: contain; background: #fff; border-radius: 6px; margin-top: 8px; }
 
 @media (min-width: 900px) { #panel { max-height: 45vh; } }
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 10px; padding: 8px 0 4px; }
+.sw { aspect-ratio: 1; border-radius: 10px; border: 2px solid rgba(255,255,255,.15); cursor: pointer; }
+.sw.on { border-color: #fff; box-shadow: 0 0 0 2px #3DDC84; }
+.b:disabled, .num:disabled { opacity: .35; cursor: not-allowed; }
