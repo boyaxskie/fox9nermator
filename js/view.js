@@ -1524,14 +1524,22 @@ export class SimView {
     held.forEach(b => { b.fixed = true; });
     try { return block(); } finally { held.forEach(b => { b.fixed = false; }); }
   }
+  // parts that move together with b. A locked part (or a part welded to one) is a wall, not a link:
+  // two mechanisms mounted on the same locked base plate don't drag each other's strong parts along.
   mechanismIds(b) {
     const ids = new Set([b.id]);
+    const anchor = new Map();
+    const isAnchor = (id) => {
+      if (id === b.id) return false;
+      if (!anchor.has(id)) { const x = this.s.byId(id); anchor.set(id, !!x && this.s.weldGroupOf(x).some(m => m.fixed)); }
+      return anchor.get(id);
+    };
     let grew = true;
     while (grew) {
       grew = false;
       for (const j of this.s.joints) if (j.b >= 0) {
-        if (ids.has(j.a) && !ids.has(j.b)) { ids.add(j.b); grew = true; }
-        if (ids.has(j.b) && !ids.has(j.a)) { ids.add(j.a); grew = true; }
+        if (ids.has(j.a) && !ids.has(j.b) && (!isAnchor(j.a) || j.kind === JointKind.WELD && !isAnchor(j.b))) { ids.add(j.b); grew = true; }
+        if (ids.has(j.b) && !ids.has(j.a) && (!isAnchor(j.b) || j.kind === JointKind.WELD && !isAnchor(j.a))) { ids.add(j.a); grew = true; }
       }
     }
     return ids;
