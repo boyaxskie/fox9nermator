@@ -7,7 +7,7 @@ import { Units, Calc } from './calc.js';
 import { Help } from './help.js';
 import { SimView, Tool, TOOLS } from './view.js';
 
-export const VERSION = '1.2';
+export const VERSION = '1.2.3';
 const PI = Math.PI;
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, attrs = {}, ...kids) => {
@@ -166,6 +166,10 @@ class App {
     this.solHold = store.bool('solHold', false);
 
     setTimeout(() => store.set('starting', false), 1500);
+    // tell the user once when a new version arrived
+    const lastVer = store.get('ver');
+    store.set('ver', VERSION);
+    if (lastVer && lastVer !== VERSION) setTimeout(() => { this.status.textContent = `✓ Updated to v${VERSION}.`; }, 60);
     if (recovered) {
       this.projectName = null;
       setTimeout(() => { this.status.textContent = `The app froze last time, so it opened empty. Your design is saved as "${recovered}" in Projects → Open.`; }, 50);

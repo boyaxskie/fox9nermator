@@ -204,8 +204,10 @@ export class SimView {
       if (!g) this.drawBody(c, b);
       else if (b === (g.anchor ??= ([...g].reverse().find(m => !m.cut) ?? g[g.length - 1]))) this.drawGroup(c, g);   // holes don't lift the piece to the front
     }
-    for (const j of s.joints) if (j.spring === 1 && j.kind === JointKind.SLIDE && j.sol === 0) this.drawSpring(c, j);
-    for (const j of s.joints) if (j.spring === 1 && j.kind === JointKind.PIN) this.drawTorsion(c, j);
+    if (!this._cleanAlways) {     // 👁 View hides springs too (they still work)
+      for (const j of s.joints) if (j.spring === 1 && j.kind === JointKind.SLIDE && j.sol === 0) this.drawSpring(c, j);
+      for (const j of s.joints) if (j.spring === 1 && j.kind === JointKind.PIN) this.drawTorsion(c, j);
+    }
     for (const j of s.joints) if (j.kind === JointKind.BELT) this.drawBelt(c, j);
     for (const j of s.joints) if (j.kind !== JointKind.BELT) this.drawJoint(c, j);
     this.drawLabels(c);
