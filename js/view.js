@@ -1346,7 +1346,10 @@ export class SimView {
       if (mb && mech.includes(mb)) continue;
       const loose = free.filter(b => !b.strong);
       if (!loose.some(b => !b.noGravity)) continue;
-      for (let k = 0; k < this.subSteps; k++) if (this.holdStrong(new Set(), () => this.fallStep(loose, gx, gy, dt / this.subSteps))) moved = true;
+      // enough sub-steps that a falling part moves ≤ 1 mm per step
+      let vmax = 0; for (const b of loose) { const v = this.gVel.get(b.id); if (v) vmax = max(vmax, hypot(v[0], v[1])); }
+      const n = max(this.subSteps, this.subCount(vmax * dt + 0.5 * G * dt * dt));
+      for (let k = 0; k < n; k++) if (this.holdStrong(new Set(), () => this.fallStep(loose, gx, gy, dt / n))) moved = true;
     }
     if (!moved) this.gIdleUntil = now + 120;
     return moved;
@@ -1392,6 +1395,8 @@ export class SimView {
     return moved;
   }
 
+  subCount(dist) { return clamp(Math.ceil(dist / 1.0), 1, 60); }
+
   springStep(j, dt, now) {
     const s = this.s, car = s.byId(j.a), g = s.byId(j.b); if (!car || !g) return false;
     if (car.fixed || car === this.motorBody) { this.springVel.set(j, 0); return false; }
@@ -1408,9 +1413,16 @@ export class SimView {
     let u1 = u + v * dt;
     if (u1 > j.hi) { u1 = j.hi; v = 0; }
     if (u1 < j.lo) { u1 = j.lo; v = 0; }
-    const t = g.toWorld(u1, j.ay);
-    this.movePoint(car, 0, 0, t.x, t.y, 12);
-    const got = g.toLocal(car.x, car.y).x - u, want = u1 - u;
+    // move in small steps (≤ 1 mm) so a fast part can't jump over a thin part between two frames
+    const want = u1 - u, n = this.subCount(abs(want));
+    for (let i = 1; i <= n; i++) {
+      const u0 = g.toLocal(car.x, car.y).x, ui = u + want * i / n;
+      const t = g.toWorld(ui, j.ay);
+      this.movePoint(car, 0, 0, t.x, t.y, 12);
+      const part = ui - u0;
+      if (abs(part) > 1e-4 && abs(g.toLocal(car.x, car.y).x - u0) < abs(part) * 0.3) break;
+    }
+    const got = g.toLocal(car.x, car.y).x - u;
     if (abs(want) > 1e-4 && abs(got) < abs(want) * 0.3) {
       this.springVel.set(j, 0); this.springWaitUntil.set(j, now + 150);
       return abs(got) > 1e-3;
@@ -1434,7 +1446,15 @@ export class SimView {
     w += (this.springK * err - this.springC * w) * dt;
     w = clamp(w, -40, 40);
     const want = w * dt;
-    if (moveA) this.moveAngle(A, A.a + want, 12); else this.moveAngle(B, B.a - want, 12);
+    // small steps: the far end of the turning part moves ≤ 1 mm per step (no jumping over thin parts)
+    const mover = moveA ? A : B, piv = A.toWorld(j.ax, j.ay);
+    let reach = 0; for (const m of s.weldGroupOf(mover)) reach = max(reach, hypot(m.x - piv.x, m.y - piv.y) + m.boundR());
+    const n = this.subCount(abs(want) * reach);
+    for (let i = 0; i < n; i++) {
+      const t0 = s.relAngle(j), part = want / n;
+      if (moveA) this.moveAngle(A, A.a + part, 12); else this.moveAngle(B, B.a - part, 12);
+      if (abs(part) > 1e-7 && abs(s.relAngle(j) - t0) < abs(part) * 0.3) break;
+    }
     const got = s.relAngle(j) - t;
     if (abs(want) > 1e-6 && abs(got) < abs(want) * 0.3) {
       this.springVel.set(j, 0); this.springWaitUntil.set(j, now + 150);

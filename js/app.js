@@ -7,7 +7,7 @@ import { Units, Calc } from './calc.js';
 import { Help } from './help.js';
 import { SimView, Tool, TOOLS } from './view.js';
 
-export const VERSION = '1.2.4';
+export const VERSION = '1.2.5';
 const PI = Math.PI;
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, attrs = {}, ...kids) => {
