@@ -1,9 +1,9 @@
 // fox9nerMator offline cache. Bump VERSION when files change so phones pick up the update.
-const VERSION = 'f9m-v1.2.5';
+const VERSION = 'f9m-v1.3.4';
 const FILES = [
   './', 'index.html', 'manifest.webmanifest', 'css/style.css',
   'js/app.js', 'js/view.js', 'js/model.js', 'js/solver.js', 'js/collision.js', 'js/measure.js',
-  'js/export.js', 'js/calc.js', 'js/help.js', 'js/vendor/polygon-clipping.esm.js',
+  'js/export.js', 'js/round.js', 'js/calc.js', 'js/help.js', 'js/vendor/polygon-clipping.esm.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/icon-maskable-512.png',
 ];
 

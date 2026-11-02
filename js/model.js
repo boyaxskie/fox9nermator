@@ -86,6 +86,7 @@ function makeEnum(enumName, defs) {
 export const BodyType = makeEnum('BodyType', [
   ['RECT', { label: 'Rect' }], ['GEAR', { label: 'Gear' }], ['RAIL', { label: 'Rail' }], ['RACK', { label: 'Rack' }],
   ['TUBE', { label: 'Tube' }], ['PULLEY', { label: 'Pulley' }], ['SOLENOID', { label: 'Solenoid' }], ['DISC', { label: 'Disc' }],
+  ['OVAL', { label: 'Oval' }],
 ]);
 
 export const JointKind = makeEnum('JointKind', [
@@ -112,7 +113,12 @@ export class Body {
     this.stroke = 10.0;       // SOLENOID: how far the plunger travels (mm)
     this.pushType = false;    // SOLENOID: false = pull (plunger pulls in when ON), true = push (pushes out)
     this.plain = false;       // DISC: true = plain solid disc (no spokes)
-    this.cut = 0;             // 0 = normal part, 1 = through hole, 2 = pocket (cuts the part it is welded to)
+    this.cut = 0;             // 0 = normal part, 1 = through hole, 2 = pocket (cuts the part it is welded to),
+                              // 3 = keep: material that stays (the notch of a cutter that had its own cut)
+    this.via = 0;             // cutters made together in one Cut: id of the shape you tapped first (0 = alone)
+    this.fillet = 0.0;        // piece corners: radius for inside (concave) corners, mm (0 = sharp)
+    this.round = 0.0;         // piece corners: radius for outside (convex) corners, mm (0 = sharp)
+    this.corners = null;      // single rounded corners (◠ Corner): [{ x, y, r }] in this part's frame
     this.color = null;        // custom fill colour (#rrggbb) or null = default for the type
     this.label = '';          // custom name, '' = automatic ("Rect 3")
   }
@@ -148,6 +154,10 @@ export class Body {
         return Math.hypot(l.x, l.y) <= this.outerR() + tol;
       case BodyType.PULLEY: case BodyType.DISC:
         return Math.hypot(l.x, l.y) <= w / 2 + tol;
+      case BodyType.OVAL: {
+        const a = w / 2 + tol, bb = h / 2 + tol;
+        return (l.x * l.x) / (a * a) + (l.y * l.y) / (bb * bb) <= 1;
+      }
       case BodyType.RAIL: {
         const rod = Math.abs(l.x) <= w / 2 + tol && Math.abs(l.y) <= h / 2 + tol;
         const blocks = Math.abs(l.x) >= w / 2 - tol && Math.abs(l.x) <= w / 2 + 15 + tol &&
@@ -171,6 +181,12 @@ export class Body {
         return [new P2(0.0, 0.0)];
       case BodyType.GEAR: case BodyType.PULLEY:
         return [new P2(0.0, 0.0)];
+      // oval: center + the two "focus" points along the long side (good pin spots for a cam or a slot end)
+      case BodyType.OVAL: {
+        const f = Math.sqrt(Math.abs(w * w - h * h)) / 2;
+        if (f < 0.5) return [new P2(0.0, 0.0)];
+        return w >= h ? [new P2(0.0, 0.0), new P2(-f, 0.0), new P2(f, 0.0)] : [new P2(0.0, 0.0), new P2(0.0, -f), new P2(0.0, f)];
+      }
       // flywheel: center + 4 crank-pin spots on the rim's inner edge (70% of the radius)
       case BodyType.DISC: {
         const out = [new P2(0.0, 0.0)];
@@ -191,6 +207,7 @@ export class Body {
       case BodyType.RECT: case BodyType.TUBE: case BodyType.SOLENOID: return this.h / 2;
       case BodyType.GEAR: return this.outerR();
       case BodyType.PULLEY: case BodyType.DISC: return this.w / 2;
+      case BodyType.OVAL: return this.h / 2;
       case BodyType.RAIL: return this.h / 2;
       case BodyType.RACK: return this.h / 2;
     }
@@ -203,6 +220,7 @@ export class Body {
       case BodyType.RECT: case BodyType.RACK: case BodyType.TUBE: case BodyType.SOLENOID: return this.w / 2;
       case BodyType.GEAR: return this.outerR();
       case BodyType.PULLEY: case BodyType.DISC: return this.w / 2;
+      case BodyType.OVAL: return this.w / 2;
       case BodyType.RAIL: return this.w / 2 + 15;
     }
     return 0;
@@ -214,6 +232,7 @@ export class Body {
       case BodyType.RECT: case BodyType.TUBE: case BodyType.SOLENOID: return Math.hypot(w / 2, h / 2);
       case BodyType.GEAR: return this.outerR();
       case BodyType.PULLEY: case BodyType.DISC: return w / 2;
+      case BodyType.OVAL: return Math.max(w, h) / 2;
       case BodyType.RAIL: return Math.hypot(w / 2 + 15, this.railBlockH() / 2);
       case BodyType.RACK: return Math.hypot(w / 2, h / 2 + this.module);
     }
@@ -406,6 +425,7 @@ export class Scene {
       case BodyType.SOLENOID: b.w = 30.0; b.h = 16.0; b.fixed = true; break;
       case BodyType.PULLEY: b.w = 40.0; b.h = 40.0; break;
       case BodyType.DISC: b.w = 120.0; b.h = 120.0; break;
+      case BodyType.OVAL: b.w = 60.0; b.h = 30.0; break;
     }
     this.bodies.push(b);
     return b;
@@ -538,9 +558,25 @@ export class Scene {
 
   // CUT: `cutter` becomes a hole (1) or pocket (2) in `target`; it is welded so it moves with it
   cutInto(cutter, target, mode) {
-    cutter.cut = mode;
-    cutter.fixed = false;
+    // the cutter's whole piece cuts: its solid parts cut, its own holes / pockets become "keep" areas,
+    // so a circle with a notch cuts a circle with a notch (the notch side does not cut)
+    for (const m of this.weldGroupOf(cutter)) {
+      m.cut = m.cut === 1 || m.cut === 2 ? 3 : m.cut === 3 ? mode : mode;
+      m.via = cutter.id;
+      m.fixed = false;
+    }
     return this.weld(new P2(cutter.x, cutter.y), cutter, target);
+  }
+  // the shapes that were made into cutters together with `b` (one Cut)
+  cutSetOf(b) {
+    const lead = b.via || b.id;
+    return this.weldGroupOf(b).filter((m) => m.cut && (m === b || (m.via || m.id) === lead));
+  }
+  // turn a cutter (and the shapes cut with it) back into normal parts, unwelded from the part they cut
+  uncut(b) {
+    const set = new Set(this.cutSetOf(b));
+    for (const m of set) { m.cut = m.cut === 3 ? 1 : 0; m.via = 0; }
+    removeIf(this.joints, (j) => j.kind === JointKind.WELD && (set.has(this.byId(j.a)) !== set.has(this.byId(j.b))));
   }
   // the solid (not cutter) parts of a weld group
   solidsOf(b) { return this.weldGroupOf(b).filter((m) => !m.cut); }
@@ -632,6 +668,53 @@ export class Scene {
   }
 
   toFront(b) { const g = this.weldGroupOf(b); const gs = new Set(g); removeIf(this.bodies, (x) => gs.has(x)); this.bodies.push(...g); }
+  // copy a part, with everything welded to it (holes, pockets, notches stay), a little to the side.
+  // Pins / slides to other parts are not copied: the copy is free. Returns the copy of b.
+  duplicate(b, dx = 20.0, dy = -20.0) {
+    const g = this.weldGroupOf(b), ids = new Map();
+    const copies = g.map((m) => {
+      const n = Object.assign(new Body(this.nextId++, m.type), m);
+      n.id = ids.set(m.id, this.nextId - 1).get(m.id);
+      n.x = m.x + dx; n.y = m.y + dy;
+      n.corners = m.corners ? m.corners.map((c) => ({ ...c })) : null;
+      if (m.label) {                               // Cam → Cam 2 → Cam 3 …
+        const base = m.label.replace(/ \d+$/, ''); let k = 2;
+        while (this.bodies.some((o) => o.label === `${base} ${k}`)) k++;
+        n.label = `${base} ${k}`;
+      }
+      return n;
+    });
+    for (const n of copies) if (n.via) n.via = ids.get(n.via) ?? 0;
+    for (const j of [...this.joints]) {
+      if (j.kind !== JointKind.WELD || !ids.has(j.a) || !ids.has(j.b)) continue;
+      const k = Object.assign(new Joint(j.kind, ids.get(j.a), ids.get(j.b)), j);
+      k.a = ids.get(j.a); k.b = ids.get(j.b);
+      this.joints.push(k);
+    }
+    this.bodies.push(...copies);
+    return copies[g.indexOf(b)];
+  }
+  // ⭐ My parts: a piece (with everything welded to it) as JSON, and putting a saved piece into this scene
+  pieceJson(b) {
+    const t = new Scene();
+    const g = this.weldGroupOf(b), ids = new Set(g.map((m) => m.id));
+    t.bodies = g.map((m) => Object.assign(new Body(m.id, m.type), m));
+    t.joints = this.joints.filter((j) => j.kind === JointKind.WELD && ids.has(j.a) && ids.has(j.b)).map((j) => Object.assign(new Joint(j.kind, j.a, j.b), j));
+    t.nextId = Math.max(...g.map((m) => m.id)) + 1;
+    return t.toJson();
+  }
+  insertPiece(json, cx, cy) {
+    const t = new Scene();
+    if (!t.loadJson(json) || !t.bodies.length) return null;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const m of t.bodies) { x0 = Math.min(x0, m.x); y0 = Math.min(y0, m.y); x1 = Math.max(x1, m.x); y1 = Math.max(y1, m.y); }
+    const dx = cx - (x0 + x1) / 2, dy = cy - (y0 + y1) / 2, ids = new Map();
+    const copies = t.bodies.map((m) => { const n = Object.assign(new Body(this.nextId++, m.type), m); n.id = this.nextId - 1; ids.set(m.id, n.id); n.x = m.x + dx; n.y = m.y + dy; n.corners = m.corners ? m.corners.map((c) => ({ ...c })) : null; return n; });
+    for (const n of copies) if (n.via) n.via = ids.get(n.via) ?? 0;
+    for (const j of t.joints) if (ids.has(j.a) && ids.has(j.b)) { const k = Object.assign(new Joint(j.kind, j.a, j.b), j); k.a = ids.get(j.a); k.b = ids.get(j.b); this.joints.push(k); }
+    this.bodies.push(...copies);
+    return copies.find((n) => !n.cut) ?? copies[0];
+  }
   toBack(b) { const g = this.weldGroupOf(b); const gs = new Set(g); removeIf(this.bodies, (x) => gs.has(x)); this.bodies.unshift(...g); }
 
   // a rod sliding INSIDE a tube/rect must be drawn in front of it
@@ -888,6 +971,10 @@ export class Scene {
       wall: num(b.wall),
       ...(b.plain ? { plain: true } : {}),
       ...(b.cut ? { cut: b.cut } : {}),
+      ...(b.via ? { via: b.via } : {}),
+      ...(b.fillet ? { fillet: b.fillet } : {}),
+      ...(b.round ? { round: b.round } : {}),
+      ...(b.corners && b.corners.length ? { corners: b.corners.map((c) => ({ x: num(c.x), y: num(c.y), r: num(c.r) })) } : {}),
       ...(b.color ? { color: b.color } : {}),
       ...(b.label ? { label: b.label } : {}),
     }));
@@ -925,7 +1012,11 @@ export class Scene {
         b.pushType = optBoolean(bo, 'push', false);
         b.wall = optDouble(bo, 'wall', 2.0);
         b.plain = optBoolean(bo, 'plain', false);
-        b.cut = [0, 1, 2].includes(bo.cut) ? bo.cut : 0;
+        b.cut = [0, 1, 2, 3].includes(bo.cut) ? bo.cut : 0;
+        b.via = Number.isInteger(bo.via) ? bo.via : 0;
+        b.fillet = typeof bo.fillet === 'number' && bo.fillet > 0 ? bo.fillet : 0;
+        b.round = typeof bo.round === 'number' && bo.round > 0 ? bo.round : 0;
+        b.corners = Array.isArray(bo.corners) ? bo.corners.filter((c) => c && isFinite(c.x) && isFinite(c.y) && c.r > 0).map((c) => ({ x: +c.x, y: +c.y, r: +c.r })) : null;
         b.color = typeof bo.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(bo.color) ? bo.color : null;
         b.label = typeof bo.label === 'string' ? bo.label.slice(0, 40) : '';
         nb.push(b);

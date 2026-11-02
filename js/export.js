@@ -7,6 +7,7 @@
 import { formatFixed } from './calc.js';
 import { P2, BodyType, JointKind } from './model.js';
 import polygonClipping from './vendor/polygon-clipping.esm.js';
+import { roundShape, roundCorners, roundedCached } from './round.js';
 
 const PI = Math.PI;
 const POCKET = 'POCKET';
@@ -152,10 +153,43 @@ export const Exporter = {
       case BodyType.RECT: case BodyType.TUBE: case BodyType.SOLENOID: return rectPts(b.w, b.h);
       case BodyType.GEAR: return gearPts(b.teeth, b.module);
       case BodyType.PULLEY: case BodyType.DISC: return Exporter.circlePts(b.w / 2);
+      case BodyType.OVAL: return Exporter.circlePts(1).map((p) => new P2(p.x * b.w / 2, p.y * b.h / 2));
       case BodyType.RACK: return rackPts(b);
       case BodyType.RAIL: return rectPts(b.w, b.h);
     }
     return [];
+  },
+
+  // the piece's rounding radii (largest set on any of its solid parts)
+  rounding(group) {
+    let rin = 0, rout = 0;
+    for (const m of group) if (!m.cut) { rin = Math.max(rin, m.fillet || 0); rout = Math.max(rout, m.round || 0); }
+    return [rin, rout];
+  },
+  hasRounding(group) { const [a, b] = Exporter.rounding(group); return a > 0.05 || b > 0.05 || group.some((m) => !m.cut && m.corners && m.corners.length); },
+  // outline of a piece with fillets / rounded corners, in `main`'s frame (polygon-clipping MultiPolygon)
+  // corners rounded one by one (◠ Corner tool), from every solid part, in `main`'s frame
+  cornersOf(solids, main) {
+    const out = [];
+    for (const m of solids) for (const c of (m.corners || [])) { const w = m.toWorld(c.x, c.y), q = main.toLocal(w.x, w.y); out.push({ x: q.x, y: q.y, r: c.r }); }
+    return out;
+  },
+  pieceKey(solids, main) {
+    return solids.map((m) => { const l = main.toLocal(m.x, m.y); return [m.type.name, m.w, m.h, m.plain ? 1 : 0, m.teeth, m.module, l.x.toFixed(3), l.y.toFixed(3), (m.a - main.a).toFixed(5)].join(','); }).join('|');
+  },
+  // the plain outline of a piece (all its solid parts joined), in `main`'s frame
+  pieceBase(group, main) {
+    const solids = group.filter((m) => !m.cut);
+    return roundedCached('base|' + Exporter.pieceKey(solids, main), () => {
+      const polys = solids.map((m) => Exporter.outlinePts(m).map((p) => { const w = m.toWorld(p.x, p.y); const q = main.toLocal(w.x, w.y); return [q.x, q.y]; }));
+      return polygonClipping.union(...polys.filter((pl) => pl.length >= 3).map((pl) => [[...pl, pl[0]]]));
+    });
+  },
+  pieceShape(group, main) {
+    const solids = group.filter((m) => !m.cut);
+    const [rin, rout] = Exporter.rounding(solids), cs = Exporter.cornersOf(solids, main);
+    const key = [rin, rout, cs.map((c) => `${c.x.toFixed(2)},${c.y.toFixed(2)},${c.r}`).join(';'), Exporter.pieceKey(solids, main)].join('|');
+    return roundedCached(key, () => roundShape(roundCorners(Exporter.pieceBase(group, main), cs), rin, rout));
   },
 
   // union of polygons (for welded pieces). On Android the app supplied it (Path.op);
@@ -174,7 +208,7 @@ export const Exporter = {
       const whole = s.weldGroupOf(b);
       whole.forEach((it) => done.add(it.id));
       const group = whole.filter((it) => !it.cut);
-      const holesB = whole.filter((it) => it.cut === 1), pocketsB = whole.filter((it) => it.cut === 2);
+      const holesB = whole.filter((it) => it.cut === 1), pocketsB = whole.filter((it) => it.cut === 2), keepsB = whole.filter((it) => it.cut === 3);
       if (group.length === 0) continue;
       if (group.length === 1 && !holesB.length && (group[0].type === BodyType.RAIL || b.type === BodyType.TUBE || b.type === BodyType.SOLENOID)) { skippedStock++; continue; }
       let main = group[0];
@@ -187,10 +221,12 @@ export const Exporter = {
       const cuts = [];
       // outline
       const polysOf = (list) => list.map((m) => Exporter.outlinePts(m).map((it) => toMain(m, it)));
-      if (holesB.length || pocketsB.length) {
+      const rounded = Exporter.hasRounding(group);
+      if (holesB.length || pocketsB.length || rounded) {
         // cut holes out of the welded outline; inner rings = through cuts, pockets on their own layer
-        const solid = polygonClipping.union(...polysOf(group).map(ring));
-        const rest = holesB.length ? polygonClipping.difference(solid, ...polysOf(holesB).map(ring)) : solid;
+        const solid = rounded ? Exporter.pieceShape(group, main) : polygonClipping.union(...polysOf(group).map(ring));
+        let rest = holesB.length ? polygonClipping.difference(solid, ...polysOf(holesB).map(ring)) : solid;
+        if (holesB.length && keepsB.length) rest = polygonClipping.union(rest, polygonClipping.intersection(solid, polygonClipping.union(...polysOf(keepsB).map(ring))));
         for (const poly of rest) for (const r of poly) { const pts = unring(r); if (pts.length >= 3) cuts.push(new Poly(pts, OUTLINE)); }
         if (pocketsB.length) {
           const pk = polygonClipping.intersection(rest, polygonClipping.union(...polysOf(pocketsB).map(ring)));

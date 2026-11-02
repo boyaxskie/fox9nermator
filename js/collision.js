@@ -27,6 +27,15 @@ export class Contact {
 const EPS = 0.02;   // mm of overlap allowed (touching is fine)
 const MAX = Number.MAX_VALUE;
 
+// an oval as a convex polygon (24 corners) in world space
+function ovalPoly(b) {
+  const n = 24, p = new Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    const t = 2 * Math.PI * i / n, w = b.toWorld(b.w / 2 * Math.cos(t), b.h / 2 * Math.sin(t));
+    p[i * 2] = w.x; p[i * 2 + 1] = w.y;
+  }
+  return new Shape(false, 0.0, 0.0, 0.0, p);
+}
 function box(b, x0, y0, x1, y1) {
   const p = new Array(8);
   const c = [new P2(x0, y0), new P2(x1, y0), new P2(x1, y1), new P2(x0, y1)];
@@ -229,6 +238,7 @@ function holeMap(s) {
     if (m.has(b.id)) continue;
     const g = s.weldGroupOf(b);
     const holes = g.filter((x) => x.cut === 1);
+    holes.keeps = g.filter((x) => x.cut === 3);
     for (const x of g) m.set(x.id, holes);
   }
   return m;
@@ -241,6 +251,15 @@ function holeSd(h, px, py) {
     const r = h.type === BodyType.GEAR ? h.pitchR() : h.w / 2;
     const d = Math.hypot(px - h.x, py - h.y);
     return d < 1e-9 ? [-r, 1, 0] : [d - r, (px - h.x) / d, (py - h.y) / d];
+  }
+  if (h.type === BodyType.OVAL) {
+    // approximate distance to the oval edge: scale the "how far out" ratio by the radius in that direction
+    const a = h.w / 2, bb = h.h / 2, k = Math.hypot(l.x / a, l.y / bb);
+    if (k < 1e-9) return [-Math.min(a, bb), 1, 0];
+    const r = Math.hypot(l.x, l.y) / k;                     // edge radius in this direction
+    let nx = l.x / (a * a), ny = l.y / (bb * bb); const nl = Math.hypot(nx, ny); nx /= nl; ny /= nl;
+    const c = Math.cos(h.a), sn = Math.sin(h.a);
+    return [(k - 1) * r, nx * c - ny * sn, nx * sn + ny * c];
   }
   const hw = h.w / 2, hh = h.h / 2;
   const ex = Math.abs(l.x) - hw, ey = Math.abs(l.y) - hh;
@@ -270,6 +289,7 @@ function stickOut(shapes, h) {
 function holeAround(hm, host, inner) {
   const hs = hm.get(host.id);
   if (!hs || !hs.length) return null;
+  if (hs.keeps.some((k) => k.contains(inner.x, inner.y, 0))) return null;   // inside a "keep" area: solid there
   return hs.find((h) => holeSd(h, inner.x, inner.y)[0] < 0) ?? null;
 }
 // collision between two parts, knowing about holes.
@@ -304,6 +324,8 @@ export const Collision = {
         return [new Shape(true, b.x, b.y, b.outerR(), [])];
       case BodyType.PULLEY: case BodyType.DISC:
         return [new Shape(true, b.x, b.y, b.w / 2, [])];
+      case BodyType.OVAL:
+        return [ovalPoly(b)];
       case BodyType.RAIL: {
         const bh = b.railBlockH() / 2;
         return [

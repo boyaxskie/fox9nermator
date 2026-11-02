@@ -7,7 +7,7 @@ import { Units, Calc } from './calc.js';
 import { Help } from './help.js';
 import { SimView, Tool, TOOLS } from './view.js';
 
-export const VERSION = '1.2.5';
+export const VERSION = '1.3.4';
 const PI = Math.PI;
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, attrs = {}, ...kids) => {
@@ -53,6 +53,9 @@ const cleanName = (n) => n.trim().replace(/[^A-Za-z0-9 _.()-]/g, '_').slice(0, 6
 const Dialog = {
   stack: [],
   open({ title, titleEl, body, items, buttons, onItem, keepOpen }) {
+    // on a phone the tap that opened this box is followed by a delayed "click" at the same spot:
+    // ignore taps for a moment, so that click can't pick an item (or Cancel) by itself
+    const opened = performance.now(), ghost = () => performance.now() - opened < 450;
     const back = el('div', { class: 'dlg-back' });
     const box = el('div', { class: 'dlg', role: 'dialog' });
     if (titleEl) box.append(titleEl);
@@ -61,7 +64,7 @@ const Dialog = {
     if (body) content.append(body);
     if (items) {
       const ul = el('div', { class: 'dlg-list' });
-      items.forEach((t, i) => ul.append(el('button', { class: 'dlg-item', text: t, onclick: () => { close(); onItem?.(i); } })));
+      items.forEach((t, i) => ul.append(el('button', { class: 'dlg-item', text: t, onclick: () => { if (ghost()) return; close(); onItem?.(i); } })));
       content.append(ul);
     }
     box.append(content);
@@ -70,12 +73,12 @@ const Dialog = {
     for (const b of (buttons ?? [{ text: 'Close' }])) {
       row.append(el('button', {
         class: 'dlg-btn' + (b.primary ? ' primary' : ''), text: b.text,
-        onclick: () => { const keep = b.keep || keepOpen; if (!keep) close(); b.on?.(); },
+        onclick: () => { if (ghost()) return; const keep = b.keep || keepOpen; if (!keep) close(); b.on?.(); },
       }));
     }
     box.append(row);
     back.append(box);
-    back.addEventListener('pointerdown', e => { if (e.target === back) close(); });
+    back.addEventListener('pointerdown', e => { if (e.target === back && !ghost()) close(); });
     document.body.append(back);
     this.stack.push(close);
     const first = box.querySelector('input'); if (first) setTimeout(() => { first.focus(); first.select?.(); }, 30);
@@ -150,6 +153,13 @@ class App {
     v.onCommit = () => { this.save(); this.queueHistory(); };
     v.onConfirm = (msg, yes) => this.confirm(msg, yes);
     v.onToolChanged = t => this.markTool(t);
+    v.onCorner = (r0, done) => {
+      const inp = input(fmtTrim(Units.toUser(r0)));
+      const apply = () => { const v2 = Calc.eval(inp.value); if (v2 != null && v2 >= 0) done(Units.fromUser(v2)); };
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter') { d.close(); apply(); } });
+      const d = Dialog.open({ title: '◠ Round this corner', body: el('div', {}, fieldRow(`Radius (${Units.label})`, inp), el('div', { class: 'dlg-note', text: 'Only this corner. Too big? The biggest that fits is used. Sharp again = Remove.' })),
+        buttons: [{ text: 'Remove', on: () => done(0) }, { text: 'Cancel' }, { text: 'Apply', primary: true, on: apply }] });
+    };
     v.onChoose = (title, items, pick) => Dialog.open({ title, items, onItem: pick, buttons: [{ text: 'Cancel' }] });
     v.onMotor = on => { this.playBtn.textContent = on ? '■ Stop' : '▶ Play'; this.playBtn.classList.toggle('on', on); };
 
@@ -224,6 +234,9 @@ class App {
       B('Front', () => this.withSel(b => { this.s.toFront(b); this.view.commitEdit(); this.say(`${b.name} is in front.`); })),
       B('Back', () => this.withSel(b => { this.s.toBack(b); this.view.commitEdit(); this.say(`${b.name} is at the back.`); })),
       B('Size', () => this.withSel(b => this.showSize(b))),
+      B('◠ Fillet', () => this.withSel(b => this.askRound(b))),
+      B('⭐ Save part', () => this.withSel(b => this.savePart(b))),
+      B('⧉ Duplicate', () => this.withSel(b => { const n = this.s.duplicate(b); this.setTool(Tool.MOVE); this.view.select(n); this.view.commitEdit(); this.say(`${n.name} is a copy of ${b.name}${this.s.weldGroupOf(b).length > 1 ? ' (with everything welded to it)' : ''}. Drag it into place.`); })),
       B('🎨 Color', () => this.withSel(b => this.askColor(b))),
       B('✏️ Name', () => this.withSel(b => this.askName(b))),
       this.lockBtn);
@@ -269,7 +282,7 @@ class App {
       B('? Help', () => this.showHelp()), B('Projects', () => this.showProjects()), B('CNC Export', () => this.showCncExport()),
       B('+ Rect', () => this.addPart(BodyType.RECT)), B('+ Gear', () => this.addPart(BodyType.GEAR)),
       B('+ Rail', () => this.addPart(BodyType.RAIL)), B('+ Tube', () => this.addPart(BodyType.TUBE)),
-      B('+ Pulley', () => this.addPart(BodyType.PULLEY)), B('+ Disc', () => this.addPart(BodyType.DISC)), B('+ Circle', () => this.addCircle()),
+      B('+ Pulley', () => this.addPart(BodyType.PULLEY)), B('+ Disc', () => this.addPart(BodyType.DISC)), B('+ Circle', () => this.addCircle()), B('+ Oval', () => this.addPart(BodyType.OVAL)), B('⭐ My parts', () => this.showMyParts()),
       B('+ Solenoid', () => this.addSolenoid()), B('+ Rack', () => this.addPart(BodyType.RACK)),
       this.unitsBtn, this.gravityBtn, this.collideBtn,
       B('Fit', () => this.view.fit()),
@@ -496,6 +509,55 @@ class App {
     const grid = el('div', { class: 'swatches' }, ...COLS.map(([c, n]) => el('button', { class: 'sw' + (b.color === c ? ' on' : ''), style: `background:${c}`, title: n, 'aria-label': n, onclick: () => { d.close(); apply(c); } })));
     const d = Dialog.open({ title: `Color for ${b.name}`, body: grid, buttons: [{ text: 'Default color', on: () => apply(null) }, { text: 'Cancel' }] });
   }
+  // ◠ Fillet: smooth the corners of the whole piece (inside corners where parts meet, and/or outside corners)
+  askRound(b) {
+    const solids = this.s.weldGroupOf(b).filter(m => !m.cut);
+    const rin = Math.max(...solids.map(m => m.fillet || 0)), rout = Math.max(...solids.map(m => m.round || 0));
+    const iIn = input(fmtTrim(Units.toUser(rin))), iOut = input(fmtTrim(Units.toUser(rout)));
+    const apply = () => {
+      const a = Calc.eval(iIn.value), o = Calc.eval(iOut.value);
+      for (const m of solids) { if (a != null && a >= 0) m.fillet = Units.fromUser(a); if (o != null && o >= 0) m.round = Units.fromUser(o); }
+      this.view.commitEdit(); this.syncSel();
+      this.say(`${b.name}: inside corners ${fmtTrim(Units.toUser(solids[0].fillet))} ${Units.label}, outside corners ${fmtTrim(Units.toUser(solids[0].round))} ${Units.label}. 0 = sharp.`);
+    };
+    [iIn, iOut].forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') { d.close(); apply(); } }));
+    const d = Dialog.open({ title: `◠ Fillet ${b.name}${solids.length > 1 ? ' (whole welded piece)' : ''}`,
+      body: el('div', {},
+        fieldRow(`Inside corners (${Units.label})`, iIn), fieldRow(`Outside corners (${Units.label})`, iOut),
+        el('div', { class: 'dlg-note', text: 'Inside = where welded parts meet (fills the corner with a curve; a single plain part has no inside corners). Outside = the sharp outer corners. Try 3–10 mm. 0 = sharp. Too big for the part? The biggest radius that fits is used. The CNC export cuts the same smooth outline.' })),
+      buttons: [{ text: 'Cancel' }, { text: 'Apply', primary: true, on: apply }] });
+  }
+  // ⭐ My parts: keep pieces you built and add them to any project
+  myParts() { try { return JSON.parse(store.get('myparts', '{}')) || {}; } catch { return {}; } }
+  savePart(b) {
+    const inp = input(b.label || '', 'e.g. Drill, Latch, Cam');
+    inp.maxLength = 40;
+    const go = () => {
+      const name = inp.value.trim().slice(0, 40) || b.name, all = this.myParts();
+      all[name] = { json: this.s.pieceJson(b), t: Date.now() };
+      store.set('myparts', JSON.stringify(all));
+      this.say(`⭐ "${name}" saved in My parts${this.s.weldGroupOf(b).length > 1 ? ' (with everything welded to it)' : ''}. Add it anywhere with ⭐ My parts.`);
+    };
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { d.close(); go(); } });
+    const d = Dialog.open({ title: `⭐ Save ${b.name} to My parts`, body: el('div', {}, inp, el('div', { class: 'dlg-note', text: 'Saved on this phone / browser. The same name replaces the old one.' })),
+      buttons: [{ text: 'Cancel' }, { text: 'Save', primary: true, on: go }] });
+  }
+  showMyParts() {
+    const all = this.myParts(), names = Object.keys(all).sort((a, b) => (all[b].t || 0) - (all[a].t || 0));
+    if (!names.length) { Dialog.open({ title: '⭐ My parts', body: el('div', { class: 'dlg-msg', text: 'Nothing saved yet.\n\nBuild a piece (weld, cut, fillet…), select it and tap ⭐ Save part.' }), buttons: [{ text: 'OK' }] }); return; }
+    Dialog.open({ title: '⭐ My parts: tap one to add it', items: names, onItem: i => {
+      const c = this.view.centerWorld(), b = this.s.insertPiece(all[names[i]].json, c.x, c.y);
+      if (!b) { this.say(`Couldn't read "${names[i]}".`); return; }
+      this.setTool(Tool.MOVE); this.view.select(b); this.view.commitEdit();
+      this.say(`⭐ ${names[i]} added. Drag it into place.`);
+    }, buttons: [{ text: 'Remove…', on: () => this.removeMyPart() }, { text: 'Close' }] });
+  }
+  removeMyPart() {
+    const all = this.myParts(), names = Object.keys(all);
+    Dialog.open({ title: 'Remove which saved part?', items: names, onItem: i => {
+      this.confirm(`Remove "${names[i]}" from My parts?`, () => { delete all[names[i]]; store.set('myparts', JSON.stringify(all)); this.say(`"${names[i]}" removed from My parts.`); });
+    }, buttons: [{ text: 'Cancel' }] });
+  }
   askName(b) {
     const inp = input(b.label, b.autoName);
     inp.maxLength = 40;
@@ -513,6 +575,7 @@ class App {
       [T.SOLENOID]: () => [len('Coil length', b.w, v => { b.w = v; }), len('Coil width', b.h, v => { b.h = v; }), len('Stroke', b.stroke, v => { b.stroke = v; })],
       [T.TUBE]: () => [len('Length', b.w, v => { b.w = v; }), len('Outer width', b.h, v => { b.h = v; }), len('Wall thickness', b.wall, v => { b.wall = v; })],
       [T.RECT]: () => [len('Length', b.w, v => { b.w = v; }), len('Width', b.h, v => { b.h = v; })],
+      [T.OVAL]: () => [len('Length', b.w, v => { b.w = v; }), len('Width', b.h, v => { b.h = v; })],
       [T.GEAR]: () => [['Teeth', b.teeth, v => { b.teeth = Math.max(6, Math.round(v)); }], ['Module (mm)', b.module, v => { b.module = v; }]],
       [T.RAIL]: () => [len('Length', b.w, v => { b.w = v; }), len('Diameter', b.h, v => { b.h = v; })],
       [T.RACK]: () => [len('Length', b.w, v => { b.w = v; }), len('Height', b.h, v => { b.h = v; }), ['Module (mm)', b.module, v => { b.module = v; }]],

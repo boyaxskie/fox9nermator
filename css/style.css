@@ -47,8 +47,11 @@ body { position: fixed; inset: 0; }
 .dlg-title { font-weight: 700; font-size: 16px; padding: 16px 20px 6px; }
 .dlg-body { padding: 4px 20px 6px; overflow-y: auto; }
 .dlg-list { display: flex; flex-direction: column; margin: 0 -20px; }
-.dlg-item { text-align: left; background: none; border: 0; color: var(--text); font: inherit; font-size: 15px; padding: 12px 20px; cursor: pointer; }
-.dlg-item:hover, .dlg-item:active { background: #2E343E; }
+.dlg-list { gap: 8px; margin: 4px 0 2px; }
+.dlg-item { text-align: left; background: #2E343E; border: 1px solid #3F4753; border-radius: 10px; color: var(--text); font: inherit; font-size: 15px; font-weight: 600; padding: 12px 40px 12px 14px; cursor: pointer; position: relative; }
+.dlg-item::after { content: '›'; position: absolute; right: 14px; top: 50%; transform: translateY(-52%); font-size: 22px; color: var(--accent); }
+.dlg-item:hover { border-color: var(--accent); }
+.dlg-item:active { background: #39414D; }
 .dlg-buttons { display: flex; justify-content: flex-end; gap: 6px; padding: 8px 12px 12px; flex-wrap: wrap; }
 .dlg-btn { background: none; border: 0; color: var(--accent); font: inherit; font-size: 14px; font-weight: 600; padding: 9px 12px; border-radius: 6px; cursor: pointer; }
 .dlg-btn:hover { background: #2E343E; }

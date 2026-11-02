@@ -6,6 +6,7 @@ import { Drive, Solver } from './solver.js';
 import { Collision } from './collision.js';
 import { MeasureCalc } from './measure.js';
 import { Units } from './calc.js';
+import { Exporter } from './export.js';
 
 const PI = Math.PI;
 const { abs, atan2, cos, sin, floor, hypot, max, min, sqrt } = Math;
@@ -15,10 +16,10 @@ const fmt = (v, d) => Number(v).toFixed(d);
 export const Tool = Object.freeze({
   MOVE: { name: 'MOVE', label: 'Move' }, PIN: { name: 'PIN', label: 'Pin' }, SLIDE: { name: 'SLIDE', label: 'Slide' },
   SLOT: { name: 'SLOT', label: 'Slot' }, MESH: { name: 'MESH', label: 'Mesh' }, BELT: { name: 'BELT', label: 'Belt' },
-  WELD: { name: 'WELD', label: 'Weld' }, CUT: { name: 'CUT', label: 'Cut' }, LOCK: { name: 'LOCK', label: 'Lock' }, TRACE: { name: 'TRACE', label: 'Trace' },
+  WELD: { name: 'WELD', label: 'Weld' }, CUT: { name: 'CUT', label: 'Cut' }, CORNER: { name: 'CORNER', label: '◠ Corner' }, LOCK: { name: 'LOCK', label: 'Lock' }, TRACE: { name: 'TRACE', label: 'Trace' },
   MEASURE: { name: 'MEASURE', label: 'Measure' }, DELETE: { name: 'DELETE', label: 'Delete' },
 });
-export const TOOLS = [Tool.MOVE, Tool.PIN, Tool.SLIDE, Tool.SLOT, Tool.MESH, Tool.BELT, Tool.WELD, Tool.CUT, Tool.LOCK, Tool.TRACE, Tool.MEASURE, Tool.DELETE];
+export const TOOLS = [Tool.MOVE, Tool.PIN, Tool.SLIDE, Tool.SLOT, Tool.MESH, Tool.BELT, Tool.WELD, Tool.CUT, Tool.CORNER, Tool.LOCK, Tool.TRACE, Tool.MEASURE, Tool.DELETE];
 
 const Drag = { NONE: 0, BODY: 1, FIXED: 2, ROTATE: 3, PAN: 4, ZOOM: 5 };
 
@@ -167,6 +168,7 @@ export class SimView {
       case Tool.LOCK: return 'Tap a part to lock / unlock it in place.';
       case Tool.TRACE: return 'Tap a point on a part to draw its path. Tap empty space to remove.';
       case Tool.WELD: return p == null ? 'Place the parts how you want them joined, then tap the first part.' : `Now tap the part to weld ${p.name} to.`;
+      case Tool.CORNER: return 'Tap near a corner of a part to round just that corner (tap a rounded one to change it).';
       case Tool.CUT: return p == null ? 'Put the hole shape (Circle, Rect…) on the part, then tap the HOLE shape.' : `Now tap the part to cut ${p.name} out of.`;
       case Tool.MEASURE:
         switch (this._measureKind) {
@@ -201,7 +203,7 @@ export class SimView {
     const groups = this.weldGroups();
     for (const b of s.bodies) {
       const g = groups.get(b.id);
-      if (!g) this.drawBody(c, b);
+      if (!g) { if (!b.cut && Exporter.hasRounding([b])) this.drawGroup(c, [b]); else this.drawBody(c, b); }
       else if (b === (g.anchor ??= ([...g].reverse().find(m => !m.cut) ?? g[g.length - 1]))) this.drawGroup(c, g);   // holes don't lift the piece to the front
     }
     if (!this._cleanAlways) {     // 👁 View hides springs too (they still work)
@@ -211,6 +213,7 @@ export class SimView {
     for (const j of s.joints) if (j.kind === JointKind.BELT) this.drawBelt(c, j);
     for (const j of s.joints) if (j.kind !== JointKind.BELT) this.drawJoint(c, j);
     this.drawLabels(c);
+    if (this._tool === Tool.CORNER) this.drawCornerMarks(c);
     if (this._cleanAlways) {
       MeasureCalc.update(s);
       if (this.lastMeasureText !== '') { this.lastMeasureText = ''; this.post(() => this.onMeasures?.('')); }
@@ -265,6 +268,7 @@ export class SimView {
       case BodyType.TUBE: case BodyType.SOLENOID: p.rect(-b.w / 2, -b.h / 2, b.w, b.h); return p;
       case BodyType.GEAR: return this.gearPath(b.teeth, b.module);
       case BodyType.PULLEY: case BodyType.DISC: p.arc(0, 0, b.w / 2, 0, 2 * PI); return p;
+      case BodyType.OVAL: p.ellipse(0, 0, b.w / 2, b.h / 2, 0, 0, 2 * PI); return p;
       case BodyType.RAIL: { const hw = b.w / 2, bh = b.railBlockH() / 2; p.rect(-hw - 15, -bh, b.w + 30, 2 * bh); return p; }
       case BodyType.RACK: return this.rackPath(b);
     }
@@ -328,6 +332,14 @@ export class SimView {
         fill(C.tubeIn); c.fillRect(-hw, -bore, b.w, 2 * bore);
         edge(); if (!merged) c.strokeRect(-hw, -hh, b.w, b.h);
         if (on) { c.strokeStyle = C.glow; c.lineWidth = this.px(3); c.strokeRect(-hw - this.px(2), -hh - this.px(2), b.w + this.px(4), b.h + this.px(4)); }
+        break;
+      }
+      case BodyType.OVAL: {
+        outline = this.outlineOf(b);
+        fill(tint ?? C.plain); c.fill(outline);
+        if (!merged) { edge(); c.stroke(outline); }
+        const f = Math.sqrt(Math.abs(b.w * b.w - b.h * b.h)) / 2;
+        if (f > 0.5) { if (b.w >= b.h) dashLine(-f, 0, f, 0); else dashLine(0, -f, 0, f); }
         break;
       }
       case BodyType.DISC: {
@@ -705,6 +717,7 @@ export class SimView {
     switch (b.type) {
       case BodyType.RECT: return C.rect; case BodyType.TUBE: return C.tube; case BodyType.GEAR: return C.gear;
       case BodyType.PULLEY: return C.pulley; case BodyType.DISC: return b.plain ? C.plain : C.disc; case BodyType.RAIL: return C.rail;
+      case BodyType.OVAL: return C.plain;
       case BodyType.RACK: return C.rack; case BodyType.SOLENOID: return C.block;
     }
     return C.rect;
@@ -729,11 +742,21 @@ export class SimView {
   // so only the outer edge stays visible (no lines where they join). Through holes are clipped out,
   // pockets are drawn darker.
   drawGroup(c, g) {
-    const solids = g.filter((m) => !m.cut), holes = g.filter((m) => m.cut === 1), pockets = g.filter((m) => m.cut === 2);
+    const solids = g.filter((m) => !m.cut), holes = g.filter((m) => m.cut === 1), pockets = g.filter((m) => m.cut === 2), keeps = g.filter((m) => m.cut === 3);
     if (!solids.length) { g.forEach((m) => this.drawLooseCutter(c, m)); return; }
     let main = solids[0]; for (const m of solids) if (m.boundR() > main.boundR()) main = m;
     const tint = main.color ?? this.baseColor(main);
     const selected = !this.clean && g.some(m => m === this.selected);
+    // fillets / rounded corners: the whole piece is one smooth outline
+    let smooth = null;
+    if (Exporter.hasRounding(solids)) {
+      smooth = new Path2D();
+      for (const poly of Exporter.pieceShape(g, main)) for (const ring of poly) ring.forEach(([x, y], i) => (i ? smooth.lineTo(x, y) : smooth.moveTo(x, y)));
+    }
+    const paintSolids = () => {
+      if (!smooth) { for (const m of solids) this.drawBody(c, m, true, tint); return; }
+      this.enterLocal(c, main); c.fillStyle = tint; c.fill(smooth, 'evenodd'); c.restore();
+    };
     c.save();
     if (holes.length) {
       const clip = new Path2D();
@@ -743,6 +766,12 @@ export class SimView {
     }
     c.setLineDash([]);
     for (const pass of selected ? ['sel', 'edge'] : ['edge']) {
+      if (smooth) {
+        this.enterLocal(c, main);
+        c.strokeStyle = pass === 'sel' ? C.sel : C.edge; c.lineWidth = this.px(pass === 'sel' ? 5 : 2.4); c.lineJoin = 'round';
+        c.stroke(smooth); c.restore();
+        continue;
+      }
       for (const m of solids) {
         this.enterLocal(c, m);
         c.strokeStyle = pass === 'sel' ? C.sel : C.edge;
@@ -752,11 +781,11 @@ export class SimView {
         c.restore();
       }
     }
-    for (const m of solids) this.drawBody(c, m, true, tint);
+    paintSolids();
     if (pockets.length) {
       // pocket = darker floor, only where there is material
       c.save();
-      const mat = new Path2D(); for (const m of solids) mat.addPath(this.screenPath(m));
+      const mat = this.materialPath(solids, main, smooth);
       c.clip(mat);
       for (const pk of pockets) {
         const p = this.screenPath(pk);
@@ -769,7 +798,7 @@ export class SimView {
     // hole walls: only where there is material (a hole over the edge makes a notch, no line outside the part)
     if (holes.length) {
       c.save(); c.setLineDash([]);
-      const mat = new Path2D(); for (const m of solids) mat.addPath(this.screenPath(m));
+      const mat = this.materialPath(solids, main, smooth);
       c.clip(mat);
       for (const h of holes) {
         const p = this.screenPath(h), sel = h === this.selected && !this.clean;
@@ -777,6 +806,60 @@ export class SimView {
       }
       c.restore();
     }
+    // "keep" areas (the notch of a cutter that had its own cut): put the material back there, with an edge where it meets the hole
+    if (keeps.length) {
+      for (const k of keeps) {
+        c.save(); c.clip(this.screenPath(k));
+        paintSolids();
+        c.restore();
+      }
+      if (holes.length) {
+        c.save(); c.setLineDash([]);
+        const mat = this.materialPath(solids, main, smooth);
+        const cut = new Path2D(); for (const h of holes) cut.addPath(this.screenPath(h));
+        c.clip(mat); c.clip(cut);
+        for (const k of keeps) { c.strokeStyle = C.edge; c.lineWidth = 3.2; c.stroke(this.screenPath(k)); }
+        c.restore();
+      }
+    }
+  }
+
+  // ◠ Corner tool: show the corners you can pick (small dots) and the ones already rounded (rings)
+  pieceCorners(g) {
+    const solids = g.filter((m) => !m.cut); if (!solids.length) return [];
+    let main = solids[0]; for (const m of solids) if (m.boundR() > main.boundR()) main = m;
+    const out = [];
+    for (const poly of Exporter.pieceBase(g, main)) for (const ring of poly) {
+      const n = ring.length - 1;
+      for (let i = 0; i < n; i++) {
+        const [px, py] = ring[(i - 1 + n) % n], [x, y] = ring[i], [nx, ny] = ring[(i + 1) % n];
+        const ax = x - px, ay = y - py, bx = nx - x, by = ny - y;
+        const turn = Math.abs(Math.atan2(ax * by - ay * bx, ax * bx + ay * by));
+        if (turn > 0.35) { const w = main.toWorld(x, y); out.push({ x: w.x, y: w.y }); }   // a real corner (> 20°), not a point on a curve
+      }
+    }
+    return out;
+  }
+  drawCornerMarks(c) {
+    const seen = new Set();
+    c.save(); c.setLineDash([]);
+    for (const b of this.s.bodies) {
+      if (b.cut || seen.has(b.id)) continue;
+      const g = this.s.weldGroupOf(b); g.forEach((m) => seen.add(m.id));
+      for (const p of this.pieceCorners(g)) { c.fillStyle = 'rgba(255,255,255,0.85)'; c.beginPath(); c.arc(this.sx(p.x), this.sy(p.y), 3.5, 0, 2 * PI); c.fill(); }
+      for (const m of g) for (const k of (m.corners || [])) {
+        const w = m.toWorld(k.x, k.y); c.strokeStyle = C.trace; c.lineWidth = 2; c.beginPath(); c.arc(this.sx(w.x), this.sy(w.y), 7, 0, 2 * PI); c.stroke();
+      }
+    }
+    c.restore();
+  }
+
+  // where the piece has material, in screen space (the smooth outline if it has fillets)
+  materialPath(solids, main, smooth) {
+    const mat = new Path2D();
+    if (smooth) { mat.addPath(smooth, new DOMMatrix().translate(this.sx(main.x), this.sy(main.y)).rotate(-main.a * 180 / PI).scale(this.scale, -this.scale)); return mat; }
+    for (const m of solids) mat.addPath(this.screenPath(m));
+    return mat;
   }
 
   // custom names written on the parts
@@ -867,7 +950,7 @@ export class SimView {
     const all = [...this.s.bodies].reverse().filter(b => b.contains(w.x, w.y, this.tol()));
     if (!solidOnly) return all;
     // skip cutters, and parts whose through hole is right under the finger
-    return all.filter(b => !b.cut && !this.s.weldGroupOf(b).some(h => h.cut === 1 && h.contains(w.x, w.y, 0)));
+    return all.filter(b => { if (b.cut) return false; const g = this.s.weldGroupOf(b); return !(g.some(h => h.cut === 1 && h.contains(w.x, w.y, 0)) && !g.some(k => k.cut === 3 && k.contains(w.x, w.y, 0))); });
   }
   isLocked(b) { return b.fixed || this.s.weldGroupOf(b).some(m => m.fixed); }
   lockedMsg(b) { const f = b.fixed ? b : this.s.weldGroupOf(b).find(m => m.fixed); return f === b ? `${b.name} is locked. Tap Unlock to move it.` : `${b.name} is welded to ${f.name}, which is locked. Unlock ${f.name} to move it.`; }
@@ -1150,26 +1233,32 @@ export class SimView {
       case Tool.CUT: {
         const first = this.pending;
         if (!first) {
-          const b = hits[0]; if (!b) { this.status('Tap the shape that will become the hole.'); return; }
+          // the hole shape is the small one: if a big part lies on top of it, still pick the smallest part under the finger
+          // (an existing hole under the finger wins, so you can change it)
+          const hole = hits.find(x => (x.cut === 1 || x.cut === 2) && s.weldGroupOf(x).some(m => !m.cut));
+          const b = hole ?? [...hits].sort((p, q) => this.area(p) - this.area(q))[0];
+          if (!b) { this.status('Tap the shape that will become the hole.'); return; }
           if (b.cut && s.weldGroupOf(b).some(m => !m.cut)) {
             // tapping an existing hole: change it or turn it back into a part
             const host = s.weldGroupOf(b).find(m => !m.cut);
             this.onChoose?.(`${b.name}: ${b.cut === 1 ? 'through hole' : 'pocket'} in ${host.name}`, ['Make it a through hole', 'Make it a pocket', 'Turn it back into a normal part'], i => {
-              if (i < 2) { b.cut = i + 1; this.status(`${b.name} is now a ${i ? 'pocket' : 'through hole'}.`); }
-              else { b.cut = 0; s.joints.splice(0, s.joints.length, ...s.joints.filter(j => !(j.kind === JointKind.WELD && (j.a === b.id || j.b === b.id)))); this.status(`${b.name} is a normal part again (unwelded).`); }
+              if (i < 2) { for (const m of s.cutSetOf(b)) if (m.cut !== 3) m.cut = i + 1; this.status(`${b.name} is now a ${i ? 'pocket' : 'through hole'}.`); }
+              else { s.uncut(b); this.status(`${b.name} is a normal part again (unwelded).`); }
               this.done(); this.finishTool();
             });
             return;
           }
           this.pending = b; this.status(this.prompt()); this.invalidate();
         } else {
-          const target = hits.find(x => x !== first && !x.cut);
+          const own = new Set(s.weldGroupOf(first));
+          const target = hits.find(x => !own.has(x) && !x.cut);
           if (!target) { this.status(`Tap the part to cut ${first.name} out of.`); return; }
           const overlaps = Collision.overlap(Collision.shapesOf(first.cut ? Object.assign(Object.create(Object.getPrototypeOf(first)), first, { cut: 0 }) : first), Collision.shapesOf(target));
           const make = (mode) => {
+            if (!overlaps) { first.x = w.x; first.y = w.y; }   // the hole shape was somewhere else: put it where you tapped the part
             s.cutInto(first, target, mode);
             this.pending = null;
-            this.status(`${first.name} is now a ${mode === 1 ? 'through hole' : 'pocket'} in ${target.name}. It moves with it. Tap the hole with Cut again to change it.` + (overlaps ? '' : ' (It doesn\'t touch the part yet: move the hole onto it.)'));
+            this.status(`${first.name} is now a ${mode === 1 ? 'through hole' : 'pocket'} in ${target.name}. It moves with it. Tap the hole with Cut again to change it.` + (overlaps ? '' : ' (It was away from the part, so it was moved to where you tapped.)'));
             this.done(); this.finishTool();
           };
           this.pending = null; this.invalidate();
@@ -1177,6 +1266,27 @@ export class SimView {
           else this.onChoose('Cut type', ['Through hole (cut all the way)', 'Pocket (cut part depth, CNC sets the depth)'], i => make(i + 1));
         }
         break;
+      }
+      case Tool.CORNER: {
+        // nearest corner of any piece (or an already rounded one) within reach of the finger
+        let best = null, bestD = 26 / this.scale;
+        const seen = new Set();
+        for (const b of s.bodies) {
+          if (b.cut || seen.has(b.id)) continue;
+          const g = s.weldGroupOf(b); g.forEach((m) => seen.add(m.id));
+          for (const m of g) for (const k of (m.corners || [])) { const p = m.toWorld(k.x, k.y), d = hypot(p.x - w.x, p.y - w.y); if (d < bestD) { bestD = d; best = { g, p, owner: m, k }; } }
+          for (const p of this.pieceCorners(g)) { const d = hypot(p.x - w.x, p.y - w.y); if (d < bestD) { bestD = d; best = { g, p }; } }
+        }
+        if (!best) { this.status('Tap closer to a corner (the white dots).'); return; }
+        const solids = best.g.filter((m) => !m.cut);
+        const owner = best.owner ?? solids.reduce((a, m) => (m.contains(best.p.x, best.p.y, 0.5) ? m : a), solids[0]);
+        this.onCorner?.(best.k?.r ?? 5, (r) => {
+          for (const m of solids) if (m.corners) m.corners = m.corners.filter((k) => { const p = m.toWorld(k.x, k.y); return hypot(p.x - best.p.x, p.y - best.p.y) > 0.5; });
+          if (r > 0) { const l = owner.toLocal(best.p.x, best.p.y); (owner.corners ??= []).push({ x: l.x, y: l.y, r }); }
+          this.status(r > 0 ? `Corner rounded (${r} mm). Tap another corner, or Move when done.` : 'Corner is sharp again.');
+          Solver.solve(this.s, null); this.invalidate(); this.onChanged?.(); this.onCommit?.();
+        });
+        return;
       }
       case Tool.LOCK: {
         const b = hits[0]; if (!b) { this.status('Tap on a part.'); return; }
@@ -1320,6 +1430,7 @@ export class SimView {
     switch (b.type) {
       case BodyType.GEAR: return PI * b.pitchR() * b.pitchR();
       case BodyType.PULLEY: case BodyType.DISC: return PI * b.w * b.w / 4;
+      case BodyType.OVAL: return PI * b.w * b.h / 4;
       default: return b.w * b.h;
     }
   }
